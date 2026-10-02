@@ -1,10 +1,13 @@
 from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from django.contrib.auth import get_user_model
 from django.db import close_old_connections
 from django.test import TestCase, TransactionTestCase, override_settings, skipUnlessDBFeature
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
 
@@ -417,3 +420,166 @@ class CheckoutConcurrencyTests(TransactionTestCase):
         self.assertEqual(SaleItem.objects.filter(sale__organization=self.organization).count(), 1)
         self.assertEqual(Payment.objects.filter(organization=self.organization).count(), 1)
         self.assertEqual(StockMovement.objects.filter(organization=self.organization).count(), 1)
+
+
+@override_settings(PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"])
+class SalesReadAPITests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.organization = Organization.objects.create(name="Sales Read", slug="sales-read")
+        self.other_organization = Organization.objects.create(name="Other Sales", slug="other-sales")
+        self.owner = self.make_member("read-owner@example.com", self.organization, Membership.Role.OWNER)
+        self.manager = self.make_member("read-manager@example.com", self.organization, Membership.Role.MANAGER)
+        self.cashier_a = self.make_member("read-a@example.com", self.organization, Membership.Role.CASHIER)
+        self.cashier_b = self.make_member("read-b@example.com", self.organization, Membership.Role.CASHIER)
+        self.foreign_owner = self.make_member("read-foreign@example.com", self.other_organization, Membership.Role.OWNER)
+        self.product = Product.objects.create(
+            organization=self.organization,
+            name="Green Tea",
+            sku="TEA-1",
+            selling_price=Decimal("12.50"),
+            cost_price=Decimal("5.00"),
+            stock_quantity=10,
+        )
+        self.other_product = Product.objects.create(
+            organization=self.other_organization,
+            name="Foreign Tea",
+            sku="FOREIGN-TEA",
+            selling_price=Decimal("99.00"),
+            cost_price=Decimal("40.00"),
+            stock_quantity=4,
+        )
+
+    def make_member(self, email, organization, role):
+        user = User.objects.create_user(email=email, password=PASSWORD)
+        Membership.objects.create(user=user, organization=organization, role=role)
+        return user
+
+    def create_sale(self, cashier, receipt, amount="12.50", *, organization=None, product=None,
+                    payment_method=Payment.Method.CASH, payment_status=Sale.PaymentStatus.PAID,
+                    status_value=Sale.Status.COMPLETED, created_at=None):
+        organization = organization or self.organization
+        product = product or self.product
+        sale = Sale.objects.create(
+            organization=organization,
+            receipt_number=receipt,
+            cashier=cashier,
+            subtotal=Decimal(amount),
+            discount=Decimal("0.00"),
+            total=Decimal(amount),
+            status=status_value,
+            payment_status=payment_status,
+            idempotency_key=receipt,
+        )
+        SaleItem.objects.create(
+            sale=sale,
+            product=product,
+            product_name=product.name,
+            product_sku=product.sku,
+            quantity=1,
+            unit_price=Decimal(amount),
+            line_total=Decimal(amount),
+        )
+        if payment_status == Sale.PaymentStatus.PAID:
+            Payment.objects.create(
+                sale=sale,
+                organization=organization,
+                method=payment_method,
+                amount=Decimal(amount),
+                created_by=cashier,
+            )
+        if created_at:
+            Sale.objects.filter(pk=sale.pk).update(created_at=created_at)
+        return sale
+
+    def test_roles_and_tenant_scope_sales_list_and_detail(self):
+        sale_a = self.create_sale(self.cashier_a, "REC-A-1")
+        sale_b = self.create_sale(self.cashier_b, "REC-B-1")
+        foreign_sale = self.create_sale(
+            self.foreign_owner,
+            "REC-FOREIGN-1",
+            organization=self.other_organization,
+            product=self.other_product,
+        )
+
+        for user in (self.owner, self.manager):
+            self.client.force_authenticate(user=user)
+            response = self.client.get("/api/v1/sales/?organization_id=" + str(self.other_organization.pk))
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            self.assertEqual({row["id"] for row in response.data["results"]}, {str(sale_a.pk), str(sale_b.pk)})
+
+        self.client.force_authenticate(user=self.cashier_a)
+        response = self.client.get(f"/api/v1/sales/?cashier={self.cashier_b.pk}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([row["id"] for row in response.data["results"]], [])
+        own_sales = self.client.get("/api/v1/sales/")
+        self.assertEqual([row["id"] for row in own_sales.data["results"]], [str(sale_a.pk)])
+        self.assertEqual(self.client.get(f"/api/v1/sales/{sale_b.pk}/").status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(self.client.get(f"/api/v1/sales/{foreign_sale.pk}/").status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(self.client.get(f"/api/v1/sales/{sale_a.pk}/").status_code, status.HTTP_200_OK)
+
+    def test_filters_search_payment_and_lagos_local_date_boundaries(self):
+        day = timezone.localdate()
+        local_zone = ZoneInfo("Africa/Lagos")
+        start = timezone.make_aware(datetime.combine(day, datetime.min.time()), local_zone)
+        next_start = timezone.make_aware(datetime.combine(day + timedelta(days=1), datetime.min.time()), local_zone)
+        previous_sale = self.create_sale(
+            self.cashier_a,
+            "REC-PREVIOUS",
+            created_at=start - timedelta(seconds=1),
+        )
+        current_sale = self.create_sale(
+            self.cashier_a,
+            "REC-CURRENT",
+            payment_method=Payment.Method.TRANSFER,
+            created_at=start,
+        )
+        self.create_sale(self.cashier_b, "REC-NEXT", created_at=next_start)
+        self.create_sale(
+            self.cashier_b,
+            "REC-UNPAID",
+            payment_status=Sale.PaymentStatus.UNPAID,
+            created_at=next_start + timedelta(minutes=1),
+        )
+        self.client.force_authenticate(user=self.owner)
+
+        same_day = self.client.get(f"/api/v1/sales/?from={day.isoformat()}&to={day.isoformat()}")
+        self.assertEqual(same_day.status_code, status.HTTP_200_OK)
+        self.assertEqual([row["id"] for row in same_day.data["results"]], [str(current_sale.pk)])
+        search = self.client.get("/api/v1/sales/?search=Green%20Tea")
+        self.assertEqual(search.data["count"], 4)
+        cashier_search = self.client.get("/api/v1/sales/?search=read-a%40example.com")
+        self.assertEqual(cashier_search.data["count"], 2)
+        transfer = self.client.get("/api/v1/sales/?payment_method=transfer")
+        self.assertEqual([row["id"] for row in transfer.data["results"]], [str(current_sale.pk)])
+        paid = self.client.get("/api/v1/sales/?payment_status=PAID")
+        self.assertEqual(paid.data["count"], 3)
+        unpaid = self.client.get("/api/v1/sales/?payment_status=UNPAID")
+        self.assertEqual(unpaid.data["count"], 1)
+        self.assertNotIn(str(previous_sale.pk), {row["id"] for row in same_day.data["results"]})
+
+    def test_invalid_date_ranges_and_pagination_parameters_return_validation_errors(self):
+        self.client.force_authenticate(user=self.owner)
+        for query in (
+            "from=invalid",
+            "to=",
+            "from=2026-10-03&to=2026-10-02",
+            "page=invalid",
+            "page_size=0",
+        ):
+            with self.subTest(query=query):
+                response = self.client.get(f"/api/v1/sales/?{query}")
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_pagination_is_bounded_and_newest_first(self):
+        older = self.create_sale(self.cashier_a, "REC-OLD", created_at=timezone.now() - timedelta(days=1))
+        middle = self.create_sale(self.cashier_a, "REC-MIDDLE", created_at=timezone.now())
+        newest = self.create_sale(self.cashier_a, "REC-NEW", created_at=timezone.now() + timedelta(seconds=1))
+        self.client.force_authenticate(user=self.owner)
+
+        first_page = self.client.get("/api/v1/sales/?page=1&page_size=2")
+        second_page = self.client.get("/api/v1/sales/?page=2&page_size=2")
+        self.assertEqual(first_page.status_code, status.HTTP_200_OK)
+        self.assertEqual(first_page.data["count"], 3)
+        self.assertEqual([row["id"] for row in first_page.data["results"]], [str(newest.pk), str(middle.pk)])
+        self.assertEqual([row["id"] for row in second_page.data["results"]], [str(older.pk)])

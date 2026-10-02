@@ -1,6 +1,5 @@
 from decimal import Decimal
 
-from django.db.models import Sum
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
@@ -33,7 +32,6 @@ class PaymentSerializer(serializers.ModelSerializer):
             "id",
             "method",
             "amount",
-            "created_by",
             "created_at",
         ]
         read_only_fields = fields
@@ -58,17 +56,38 @@ class SaleSerializer(serializers.ModelSerializer):
             "payment_status",
             "cashier",
             "cashier_email",
-            "idempotency_key",
+            "cashier_name",
             "items",
             "payments",
             "created_at",
-            "updated_at",
         ]
         read_only_fields = fields
 
     @extend_schema_field(OpenApiTypes.DECIMAL)
     def get_amount_paid(self, obj):
-        return obj.payments.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+        return sum((payment.amount for payment in obj.payments.all()), Decimal("0.00"))
+
+    cashier_name = serializers.SerializerMethodField()
+
+    @extend_schema_field(OpenApiTypes.STR)
+    def get_cashier_name(self, obj):
+        return " ".join(part for part in [obj.cashier.first_name, obj.cashier.last_name] if part)
+
+
+class SalesFilterSerializer(serializers.Serializer):
+    date_from = serializers.DateField(required=False, input_formats=["%Y-%m-%d"])
+    date_to = serializers.DateField(required=False, input_formats=["%Y-%m-%d"])
+    search = serializers.CharField(required=False, allow_blank=True, max_length=100)
+    payment_method = serializers.ChoiceField(required=False, choices=Payment.Method.choices)
+    payment_status = serializers.ChoiceField(required=False, choices=Sale.PaymentStatus.choices)
+    cashier = serializers.IntegerField(required=False, min_value=1)
+
+    def validate(self, attrs):
+        date_from = attrs.get("date_from")
+        date_to = attrs.get("date_to")
+        if date_from and date_to and date_from > date_to:
+            raise serializers.ValidationError({"to": "The end date must be on or after the start date."})
+        return attrs
 
 
 class CheckoutItemSerializer(serializers.Serializer):
