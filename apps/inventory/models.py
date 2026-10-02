@@ -11,6 +11,7 @@ class StockMovement(models.Model):
 		STOCK_IN = "stock_in", "Stock in"
 		ADJUSTMENT_IN = "adjustment_in", "Adjustment in"
 		ADJUSTMENT_OUT = "adjustment_out", "Adjustment out"
+		SALE_OUT = "sale_out", "Sale out"
 
 	organization = models.ForeignKey(
 		Organization,
@@ -62,7 +63,7 @@ class StockMovement(models.Model):
 			models.CheckConstraint(
 				condition=(
 					Q(movement_type__in=["stock_in", "adjustment_in"], quantity__gt=0)
-					| Q(movement_type="adjustment_out", quantity__lt=0)
+					| Q(movement_type__in=["adjustment_out", "sale_out"], quantity__lt=0)
 				),
 				name="stock_movement_type_matches_sign",
 			),
