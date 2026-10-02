@@ -98,7 +98,11 @@ class DashboardAPITests(TestCase):
 
 	def test_owner_and_manager_get_tenant_scoped_dashboard_metrics(self):
 		first = self.create_sale(self.cashier_a, "DASH-A-1", "25.00")
-		self.create_sale(self.cashier_b, "DASH-B-1", "100.00")
+		second = self.create_sale(self.cashier_b, "DASH-B-1", "100.00")
+		first.status = Sale.Status.PARTIALLY_RETURNED
+		first.save(update_fields=["status"])
+		second.status = Sale.Status.FULLY_RETURNED
+		second.save(update_fields=["status"])
 		self.create_sale(
 			self.foreign_owner,
 			"DASH-FOREIGN",
@@ -116,7 +120,7 @@ class DashboardAPITests(TestCase):
 			self.cashier_a,
 			"DASH-REFUNDED",
 			"400.00",
-			status_value=Sale.Status.REFUNDED,
+			status_value=Sale.Status.FULLY_RETURNED,
 			payment_status=Sale.PaymentStatus.REFUNDED,
 		)
 
@@ -133,7 +137,7 @@ class DashboardAPITests(TestCase):
 			self.assertEqual(response.data["out_of_stock_products"], 1)
 			self.assertCountEqual(
 				[sale["id"] for sale in response.data["recent_sales"]],
-				[str(first.pk), str(Sale.objects.get(receipt_number="DASH-B-1").pk)],
+				[str(first.pk), str(second.pk)],
 			)
 
 	def test_cashier_dashboard_uses_only_the_cashiers_own_sales(self):

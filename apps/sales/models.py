@@ -12,8 +12,8 @@ from apps.organizations.models import Organization
 class Sale(models.Model):
     class Status(models.TextChoices):
         COMPLETED = "COMPLETED", "Completed"
-        REFUNDED = "REFUNDED", "Refunded"
-        PARTIALLY_REFUNDED = "PARTIALLY_REFUNDED", "Partially refunded"
+        PARTIALLY_RETURNED = "PARTIALLY_RETURNED", "Partially returned"
+        FULLY_RETURNED = "FULLY_RETURNED", "Fully returned"
 
     class PaymentStatus(models.TextChoices):
         PAID = "PAID", "Paid"
@@ -144,3 +144,84 @@ class Payment(models.Model):
 
     def __str__(self):
         return f"{self.method} {self.amount}"
+
+
+class SaleReturn(models.Model):
+    class Status(models.TextChoices):
+        COMPLETED = "COMPLETED", "Completed"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.PROTECT,
+        related_name="sale_returns",
+    )
+    sale = models.ForeignKey(
+        Sale,
+        on_delete=models.PROTECT,
+        related_name="returns",
+    )
+    processed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="sale_returns_processed",
+    )
+    reason = models.CharField(max_length=500)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.COMPLETED)
+    refund_amount = models.DecimalField(max_digits=14, decimal_places=2)
+    refund_method = models.CharField(max_length=20, choices=Payment.Method.choices)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(refund_amount__gte=0),
+                name="sale_return_refund_nonnegative",
+            ),
+        ]
+
+    def __str__(self):
+        return f"Return for {self.sale.receipt_number}"
+
+
+class SaleReturnItem(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    sale_return = models.ForeignKey(
+        SaleReturn,
+        on_delete=models.PROTECT,
+        related_name="items",
+    )
+    sale_item = models.ForeignKey(
+        SaleItem,
+        on_delete=models.PROTECT,
+        related_name="return_items",
+    )
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.PROTECT,
+        related_name="sale_return_items",
+    )
+    product_name = models.CharField(max_length=200)
+    product_sku = models.CharField(max_length=100)
+    quantity_returned = models.PositiveIntegerField()
+    unit_price = models.DecimalField(max_digits=14, decimal_places=2)
+    refund_amount = models.DecimalField(max_digits=14, decimal_places=2)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(quantity_returned__gt=0),
+                name="sale_return_item_quantity_positive",
+            ),
+            models.CheckConstraint(
+                condition=Q(unit_price__gte=0) & Q(refund_amount__gte=0),
+                name="sale_return_item_amounts_nonnegative",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.product_name} returned x {self.quantity_returned}"

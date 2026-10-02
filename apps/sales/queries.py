@@ -15,7 +15,11 @@ def visible_sales_queryset(organization, role, user):
 
 def completed_paid_sales(queryset):
     return queryset.filter(
-        status=Sale.Status.COMPLETED,
+        status__in=[
+            Sale.Status.COMPLETED,
+            Sale.Status.PARTIALLY_RETURNED,
+            Sale.Status.FULLY_RETURNED,
+        ],
         payment_status=Sale.PaymentStatus.PAID,
     )
 

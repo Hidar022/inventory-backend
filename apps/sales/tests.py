@@ -2,6 +2,7 @@ from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from unittest.mock import patch
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from django.contrib.auth import get_user_model
@@ -14,7 +15,7 @@ from rest_framework.test import APIClient
 from apps.catalog.models import Category, Product
 from apps.inventory.models import StockMovement
 from apps.organizations.models import Membership, Organization
-from apps.sales.models import Payment, Sale, SaleItem
+from apps.sales.models import Payment, Sale, SaleItem, SaleReturn, SaleReturnItem
 
 User = get_user_model()
 PASSWORD = "StrongPass123!"
@@ -583,3 +584,357 @@ class SalesReadAPITests(TestCase):
         self.assertEqual(first_page.data["count"], 3)
         self.assertEqual([row["id"] for row in first_page.data["results"]], [str(newest.pk), str(middle.pk)])
         self.assertEqual([row["id"] for row in second_page.data["results"]], [str(older.pk)])
+
+
+@override_settings(PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"])
+class SaleReturnAPITests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.organization = Organization.objects.create(name="Returns A", slug="returns-a")
+        self.foreign_organization = Organization.objects.create(name="Returns B", slug="returns-b")
+        self.owner = self.make_member("returns-owner@example.com", self.organization, Membership.Role.OWNER)
+        self.manager = self.make_member("returns-manager@example.com", self.organization, Membership.Role.MANAGER)
+        self.cashier = self.make_member("returns-cashier@example.com", self.organization, Membership.Role.CASHIER)
+        self.foreign_owner = self.make_member(
+            "returns-foreign@example.com",
+            self.foreign_organization,
+            Membership.Role.OWNER,
+        )
+        self.product_a = self.make_product(self.organization, "Return Tea", "RETURN-TEA", 7)
+        self.product_b = self.make_product(self.organization, "Return Coffee", "RETURN-COFFEE", 8)
+        self.foreign_product = self.make_product(self.foreign_organization, "Foreign", "FOREIGN-RETURN", 3)
+        self.sale, self.sale_item_a, self.sale_item_b = self.make_sale(product_b=self.product_b)
+        self.foreign_sale, _, _ = self.make_sale(
+            organization=self.foreign_organization,
+            cashier=self.foreign_owner,
+            product_a=self.foreign_product,
+            product_b=None,
+            receipt="FOREIGN-RETURN-RECEIPT",
+        )
+
+    def make_member(self, email, organization, role):
+        user = User.objects.create_user(email=email, password=PASSWORD)
+        Membership.objects.create(user=user, organization=organization, role=role)
+        return user
+
+    def make_product(self, organization, name, sku, stock):
+        return Product.objects.create(
+            organization=organization,
+            name=name,
+            sku=sku,
+            selling_price=Decimal("5.00"),
+            cost_price=Decimal("2.00"),
+            stock_quantity=stock,
+        )
+
+    def make_sale(self, organization=None, cashier=None, product_a=None, product_b=None,
+                  receipt="RETURN-RECEIPT"):
+        organization = organization or self.organization
+        cashier = cashier or self.cashier
+        product_a = product_a or self.product_a
+        sale = Sale.objects.create(
+            organization=organization,
+            receipt_number=receipt,
+            cashier=cashier,
+            subtotal=Decimal("21.00" if product_b else "15.00"),
+            discount=Decimal("0.00"),
+            total=Decimal("21.00" if product_b else "15.00"),
+            status=Sale.Status.COMPLETED,
+            payment_status=Sale.PaymentStatus.PAID,
+            idempotency_key=receipt,
+        )
+        sale_item_a = SaleItem.objects.create(
+            sale=sale,
+            product=product_a,
+            product_name=product_a.name,
+            product_sku=product_a.sku,
+            quantity=3,
+            unit_price=Decimal("5.00"),
+            line_total=Decimal("15.00"),
+        )
+        sale_item_b = None
+        if product_b:
+            sale_item_b = SaleItem.objects.create(
+                sale=sale,
+                product=product_b,
+                product_name=product_b.name,
+                product_sku=product_b.sku,
+                quantity=2,
+                unit_price=Decimal("3.00"),
+                line_total=Decimal("6.00"),
+            )
+        Payment.objects.create(
+            sale=sale,
+            organization=organization,
+            method=Payment.Method.CASH,
+            amount=sale.total,
+            created_by=cashier,
+        )
+        return sale, sale_item_a, sale_item_b
+
+    def return_url(self, sale=None):
+        return f"/api/v1/sales/{(sale or self.sale).pk}/returns/"
+
+    def return_payload(self, items=None, **overrides):
+        payload = {
+            "items": (
+                items
+                if items is not None
+                else [{"sale_item_id": str(self.sale_item_a.pk), "quantity": 1}]
+            ),
+            "reason": "Customer returned damaged item",
+            "refund_method": Payment.Method.CASH,
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_owner_partial_then_full_return_restores_stock_and_preserves_original_sale(self):
+        self.client.force_authenticate(user=self.owner)
+        original_payment = Payment.objects.get(sale=self.sale)
+        original_item_values = (self.sale_item_a.product_name, self.sale_item_a.product_sku, self.sale_item_a.quantity)
+
+        partial = self.client.post(self.return_url(), self.return_payload(), format="json")
+        self.assertEqual(partial.status_code, status.HTTP_201_CREATED, partial.data)
+        self.assertEqual(partial.data["refund_amount"], "5.00")
+        self.assertEqual(partial.data["sale_status"], Sale.Status.PARTIALLY_RETURNED)
+        self.assertEqual(partial.data["items"][0]["product_name"], "Return Tea")
+        self.product_a.refresh_from_db()
+        self.assertEqual(self.product_a.stock_quantity, 8)
+        movement = StockMovement.objects.get(reference_id=partial.data["id"])
+        self.assertEqual(movement.movement_type, StockMovement.MovementType.SALE_RETURN)
+        self.assertEqual(movement.quantity, 1)
+        self.assertEqual((movement.previous_quantity, movement.new_quantity), (7, 8))
+        self.assertEqual(movement.reference_type, "sale_return")
+
+        full = self.client.post(
+            self.return_url(),
+            self.return_payload(
+                items=[
+                    {"sale_item_id": str(self.sale_item_a.pk), "quantity": 2},
+                    {"sale_item_id": str(self.sale_item_b.pk), "quantity": 2},
+                ],
+                refund_method=Payment.Method.TRANSFER,
+            ),
+            format="json",
+        )
+        self.assertEqual(full.status_code, status.HTTP_201_CREATED, full.data)
+        self.assertEqual(full.data["refund_amount"], "16.00")
+        self.assertEqual(full.data["sale_status"], Sale.Status.FULLY_RETURNED)
+        self.product_a.refresh_from_db()
+        self.product_b.refresh_from_db()
+        self.assertEqual(self.product_a.stock_quantity, 10)
+        self.assertEqual(self.product_b.stock_quantity, 10)
+        self.sale.refresh_from_db()
+        self.sale_item_a.refresh_from_db()
+        self.assertEqual(self.sale.status, Sale.Status.FULLY_RETURNED)
+        self.assertEqual(
+            (self.sale_item_a.product_name, self.sale_item_a.product_sku, self.sale_item_a.quantity),
+            original_item_values,
+        )
+        original_payment.refresh_from_db()
+        self.assertEqual(original_payment.amount, Decimal("21.00"))
+        self.assertEqual(Payment.objects.filter(sale=self.sale).count(), 1)
+        self.assertEqual(Sale.objects.filter(pk=self.sale.pk).count(), 1)
+
+    def test_manager_can_return_cashier_history_is_scoped_and_cashier_cannot_process(self):
+        self.client.force_authenticate(user=self.cashier)
+        denied = self.client.post(self.return_url(), self.return_payload(), format="json")
+        self.assertEqual(denied.status_code, status.HTTP_403_FORBIDDEN)
+
+        self.client.force_authenticate(user=self.manager)
+        created = self.client.post(self.return_url(), self.return_payload(), format="json")
+        self.assertEqual(created.status_code, status.HTTP_201_CREATED, created.data)
+
+        self.client.force_authenticate(user=self.cashier)
+        history = self.client.get(self.return_url())
+        self.assertEqual(history.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(history.data["results"]), 1)
+        self.assertEqual(history.data["results"][0]["id"], created.data["id"])
+
+    def test_foreign_sale_and_sale_item_are_not_accessible(self):
+        self.client.force_authenticate(user=self.foreign_owner)
+        response = self.client.post(
+            self.return_url(self.sale),
+            self.return_payload(),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.post(
+            self.return_url(),
+            self.return_payload(items=[{"sale_item_id": str(self.foreign_sale.items.first().pk), "quantity": 1}]),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(SaleReturn.objects.count(), 0)
+
+    def test_cannot_return_more_than_remaining_or_return_fully_returned_item(self):
+        self.client.force_authenticate(user=self.owner)
+        too_many = self.client.post(
+            self.return_url(),
+            self.return_payload(items=[{"sale_item_id": str(self.sale_item_a.pk), "quantity": 4}]),
+            format="json",
+        )
+        self.assertEqual(too_many.status_code, status.HTTP_400_BAD_REQUEST)
+
+        partial = self.client.post(self.return_url(), self.return_payload(items=[{"sale_item_id": str(self.sale_item_a.pk), "quantity": 2}]), format="json")
+        self.assertEqual(partial.status_code, status.HTTP_201_CREATED)
+        remaining_over = self.client.post(self.return_url(), self.return_payload(items=[{"sale_item_id": str(self.sale_item_a.pk), "quantity": 2}]), format="json")
+        self.assertEqual(remaining_over.status_code, status.HTTP_400_BAD_REQUEST)
+        final_quantity = self.client.post(self.return_url(), self.return_payload(items=[{"sale_item_id": str(self.sale_item_a.pk), "quantity": 1}]), format="json")
+        self.assertEqual(final_quantity.status_code, status.HTTP_201_CREATED)
+        already_returned = self.client.post(self.return_url(), self.return_payload(), format="json")
+        self.assertEqual(already_returned.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_rejects_empty_zero_negative_duplicate_and_untrusted_fields(self):
+        self.client.force_authenticate(user=self.owner)
+        cases = [
+            self.return_payload(items=[]),
+            self.return_payload(items=[{"sale_item_id": str(self.sale_item_a.pk), "quantity": 0}]),
+            self.return_payload(items=[{"sale_item_id": str(self.sale_item_a.pk), "quantity": -1}]),
+            self.return_payload(items=[
+                {"sale_item_id": str(self.sale_item_a.pk), "quantity": 1},
+                {"sale_item_id": str(self.sale_item_a.pk), "quantity": 1},
+            ]),
+            self.return_payload(refund_method="card"),
+            self.return_payload(refund_amount="0.01"),
+            self.return_payload(items=[{"sale_item_id": str(self.sale_item_a.pk), "quantity": 1, "unit_price": "0.01"}]),
+            {"items": "malformed", "reason": "reason", "refund_method": "cash"},
+        ]
+        for payload in cases:
+            with self.subTest(payload=payload):
+                response = self.client.post(self.return_url(), payload, format="json")
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(SaleReturn.objects.count(), 0)
+
+    def test_unpaid_and_non_completed_sales_cannot_be_returned(self):
+        self.client.force_authenticate(user=self.owner)
+        self.sale.payment_status = Sale.PaymentStatus.UNPAID
+        self.sale.save(update_fields=["payment_status"])
+        unpaid = self.client.post(self.return_url(), self.return_payload(), format="json")
+        self.assertEqual(unpaid.status_code, status.HTTP_400_BAD_REQUEST)
+        self.sale.payment_status = Sale.PaymentStatus.PAID
+        self.sale.status = Sale.Status.FULLY_RETURNED
+        self.sale.save(update_fields=["payment_status", "status"])
+        fully_returned = self.client.post(self.return_url(), self.return_payload(), format="json")
+        self.assertEqual(fully_returned.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_failure_after_return_records_rolls_back_everything(self):
+        self.client.force_authenticate(user=self.owner)
+        self.client.raise_request_exception = False
+        with patch("apps.sales.return_services.StockMovement.objects.bulk_create", side_effect=RuntimeError("ledger failed")):
+            response = self.client.post(self.return_url(), self.return_payload(), format="json")
+        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        self.assertEqual(SaleReturn.objects.count(), 0)
+        self.assertEqual(SaleReturnItem.objects.count(), 0)
+        self.assertEqual(StockMovement.objects.count(), 0)
+        self.product_a.refresh_from_db()
+        self.assertEqual(self.product_a.stock_quantity, 7)
+        self.assertEqual(Payment.objects.filter(sale=self.sale).count(), 1)
+
+    def test_cancelled_return_does_not_consume_returnable_quantity(self):
+        cancelled = SaleReturn.objects.create(
+            organization=self.organization,
+            sale=self.sale,
+            processed_by=self.owner,
+            reason="Cancelled before processing",
+            status=SaleReturn.Status.CANCELLED,
+            refund_amount=Decimal("5.00"),
+            refund_method=Payment.Method.CASH,
+        )
+        SaleReturnItem.objects.create(
+            sale_return=cancelled,
+            sale_item=self.sale_item_a,
+            product=self.product_a,
+            product_name=self.sale_item_a.product_name,
+            product_sku=self.sale_item_a.product_sku,
+            quantity_returned=1,
+            unit_price=Decimal("5.00"),
+            refund_amount=Decimal("5.00"),
+        )
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.post(self.return_url(), self.return_payload(), format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+
+
+@skipUnlessDBFeature("has_select_for_update")
+@override_settings(PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"])
+class SaleReturnConcurrencyTests(TransactionTestCase):
+    def setUp(self):
+        self.organization = Organization.objects.create(name="Return Lock", slug="return-lock")
+        self.user = User.objects.create_user(email="return-lock@example.com", password=PASSWORD)
+        Membership.objects.create(
+            user=self.user,
+            organization=self.organization,
+            role=Membership.Role.OWNER,
+        )
+        product = Product.objects.create(
+            organization=self.organization,
+            name="Once only",
+            sku="ONCE-RETURN",
+            selling_price=Decimal("10.00"),
+            cost_price=Decimal("4.00"),
+            stock_quantity=0,
+        )
+        self.sale = Sale.objects.create(
+            organization=self.organization,
+            receipt_number="LOCK-RETURN-1",
+            cashier=self.user,
+            subtotal=Decimal("10.00"),
+            discount=Decimal("0.00"),
+            total=Decimal("10.00"),
+            status=Sale.Status.COMPLETED,
+            payment_status=Sale.PaymentStatus.PAID,
+            idempotency_key="lock-return-1",
+        )
+        self.sale_item = SaleItem.objects.create(
+            sale=self.sale,
+            product=product,
+            product_name=product.name,
+            product_sku=product.sku,
+            quantity=1,
+            unit_price=Decimal("10.00"),
+            line_total=Decimal("10.00"),
+        )
+        Payment.objects.create(
+            sale=self.sale,
+            organization=self.organization,
+            method=Payment.Method.CASH,
+            amount=Decimal("10.00"),
+            created_by=self.user,
+        )
+        self.product = product
+
+    def test_concurrent_requests_cannot_return_one_item_twice(self):
+        user_id = self.user.pk
+        sale_id = self.sale.pk
+        sale_item_id = self.sale_item.pk
+
+        def return_once(_):
+            close_old_connections()
+            try:
+                client = APIClient()
+                client.force_authenticate(user=User.objects.get(pk=user_id))
+                response = client.post(
+                    f"/api/v1/sales/{sale_id}/returns/",
+                    {
+                        "items": [{"sale_item_id": str(sale_item_id), "quantity": 1}],
+                        "reason": "Concurrent return",
+                        "refund_method": Payment.Method.CASH,
+                    },
+                    format="json",
+                )
+                return response.status_code
+            finally:
+                close_old_connections()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            responses = list(executor.map(return_once, range(2)))
+
+        self.assertCountEqual(responses, [status.HTTP_201_CREATED, status.HTTP_400_BAD_REQUEST])
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock_quantity, 1)
+        self.assertEqual(SaleReturn.objects.filter(sale=self.sale).count(), 1)
+        self.assertEqual(SaleReturnItem.objects.filter(sale_return__sale=self.sale).count(), 1)
+        self.assertEqual(StockMovement.objects.filter(reference_type="sale_return").count(), 1)

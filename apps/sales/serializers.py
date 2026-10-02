@@ -6,7 +6,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 
 from apps.catalog.models import Product
-from apps.sales.models import Payment, Sale, SaleItem
+from apps.sales.models import Payment, Sale, SaleItem, SaleReturn, SaleReturnItem
 
 
 class SaleItemSerializer(serializers.ModelSerializer):
@@ -88,6 +88,76 @@ class SalesFilterSerializer(serializers.Serializer):
         if date_from and date_to and date_from > date_to:
             raise serializers.ValidationError({"to": "The end date must be on or after the start date."})
         return attrs
+
+
+class StrictSerializer(serializers.Serializer):
+    def to_internal_value(self, data):
+        if hasattr(data, "keys"):
+            unexpected = set(data) - set(self.fields)
+            if unexpected:
+                raise serializers.ValidationError(
+                    {key: ["This field is not accepted."] for key in sorted(unexpected)}
+                )
+        return super().to_internal_value(data)
+
+
+class SaleReturnItemRequestSerializer(StrictSerializer):
+    sale_item_id = serializers.UUIDField()
+    quantity = serializers.IntegerField(min_value=1)
+
+
+class SaleReturnCreateSerializer(StrictSerializer):
+    items = SaleReturnItemRequestSerializer(many=True, allow_empty=False)
+    reason = serializers.CharField(max_length=500, trim_whitespace=True)
+    refund_method = serializers.ChoiceField(choices=Payment.Method.choices)
+
+    def validate_items(self, value):
+        item_ids = [item["sale_item_id"] for item in value]
+        if len(item_ids) != len(set(item_ids)):
+            raise serializers.ValidationError("Duplicate sale item IDs are not allowed.")
+        return value
+
+
+class SaleReturnItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SaleReturnItem
+        fields = [
+            "id",
+            "sale_item",
+            "product_name",
+            "product_sku",
+            "quantity_returned",
+            "unit_price",
+            "refund_amount",
+        ]
+        read_only_fields = fields
+
+
+class SaleReturnSerializer(serializers.ModelSerializer):
+    sale_id = serializers.UUIDField(read_only=True)
+    sale_receipt_number = serializers.CharField(source="sale.receipt_number", read_only=True)
+    sale_status = serializers.CharField(source="sale.status", read_only=True)
+    processed_by_email = serializers.EmailField(source="processed_by.email", read_only=True)
+    items = SaleReturnItemSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = SaleReturn
+        fields = [
+            "id",
+            "sale_id",
+            "sale_receipt_number",
+            "sale_status",
+            "status",
+            "reason",
+            "refund_amount",
+            "refund_method",
+            "processed_by",
+            "processed_by_email",
+            "created_at",
+            "updated_at",
+            "items",
+        ]
+        read_only_fields = fields
 
 
 class CheckoutItemSerializer(serializers.Serializer):

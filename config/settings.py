@@ -136,6 +136,9 @@ SPECTACULAR_SETTINGS = {
     "DESCRIPTION": "Multi-tenant inventory and point-of-sale API.",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
+    "ENUM_NAME_OVERRIDES": {
+        "PaymentMethodEnum": "apps.sales.models.Payment.Method",
+    },
 }
 
 CORS_ALLOWED_ORIGINS = env.list(

@@ -2,14 +2,26 @@ from django.db.models import Prefetch
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import generics, permissions, status
+from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.organizations.permissions import IsOrganizationMember, OrganizationContextMixin
-from apps.sales.models import Payment, Sale, SaleItem
+from apps.organizations.permissions import (
+    IsOrganizationMember,
+    IsOwnerOrManager,
+    OrganizationContextMixin,
+)
+from apps.sales.models import Payment, Sale, SaleItem, SaleReturn, SaleReturnItem
 from apps.sales.pagination import SalesPagination
 from apps.sales.queries import apply_sales_filters, visible_sales_queryset
-from apps.sales.serializers import CheckoutSerializer, SaleSerializer, SalesFilterSerializer
+from apps.sales.serializers import (
+    CheckoutSerializer,
+    SaleReturnCreateSerializer,
+    SaleReturnSerializer,
+    SaleSerializer,
+    SalesFilterSerializer,
+)
+from apps.sales.return_services import process_sale_return
 from apps.sales.services import checkout_sale
 
 
@@ -103,3 +115,62 @@ class SaleDetailView(OrganizationContextMixin, generics.RetrieveAPIView):
             Prefetch("payments", queryset=Payment.objects.order_by("id")),
         )
         return queryset.select_related("cashier", "organization")
+
+
+class SaleReturnListView(OrganizationContextMixin, generics.ListAPIView):
+    permission_classes = [permissions.IsAuthenticated, IsOrganizationMember]
+    serializer_class = SaleReturnSerializer
+
+    def get_permissions(self):
+        permissions_list = [permissions.IsAuthenticated, IsOrganizationMember]
+        if self.request.method == "POST":
+            permissions_list.append(IsOwnerOrManager)
+        return [permission() for permission in permissions_list]
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return SaleReturnCreateSerializer
+        return SaleReturnSerializer
+
+    @extend_schema(
+        operation_id="sale_return_list",
+        responses=SaleReturnSerializer(many=True),
+        description="Lists return/refund history for an accessible sale in the active organization.",
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
+    @extend_schema(
+        operation_id="sale_return_create",
+        request=SaleReturnCreateSerializer,
+        responses={201: SaleReturnSerializer, 400: OpenApiTypes.OBJECT},
+        description="Processes a tenant-scoped return and refund. Only owners and managers may process returns.",
+    )
+    def post(self, request, sale_id, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        sale_return = process_sale_return(
+            organization=request.organization,
+            sale_id=sale_id,
+            processed_by=request.user,
+            reason=serializer.validated_data["reason"],
+            refund_method=serializer.validated_data["refund_method"],
+            items=serializer.validated_data["items"],
+        )
+        response_serializer = SaleReturnSerializer(sale_return)
+        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+
+    def get_queryset(self):
+        sale_queryset = visible_sales_queryset(
+            self.request.organization,
+            self.request.role,
+            self.request.user,
+        )
+        return (
+            SaleReturn.objects.filter(sale__in=sale_queryset)
+            .select_related("sale", "processed_by")
+            .prefetch_related(
+                Prefetch("items", queryset=SaleReturnItem.objects.order_by("id"))
+            )
+            .order_by("-created_at", "-id")
+        )
