@@ -1,6 +1,9 @@
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.mail import EmailMultiAlternatives
+from django.db import transaction
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
@@ -30,7 +33,29 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         password = validated_data.pop("password")
-        return User.objects.create_user(password=password, **validated_data)
+        with transaction.atomic():
+            user = User.objects.create_user(password=password, **validated_data)
+        self.send_welcome_email(user)
+        return user
+
+    def send_welcome_email(self, user):
+        if not user.email:
+            return
+        name = user.get_full_name() or user.email
+        subject = "Welcome to Inventory SaaS"
+        body = (
+            f"Hello {name},\n\n"
+            "Welcome to Inventory SaaS. Your account has been created successfully.\n\n"
+            f"Login here: {settings.FRONTEND_BASE_URL.rstrip('/')}/login\n\n"
+            "Next steps: create or join an organization, then invite your team and start managing inventory."
+        )
+        email = EmailMultiAlternatives(
+            subject,
+            body,
+            settings.DEFAULT_FROM_EMAIL,
+            [user.email],
+        )
+        email.send()
 
 
 class UserSerializer(serializers.ModelSerializer):

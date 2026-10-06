@@ -1,19 +1,229 @@
-from rest_framework import generics, permissions
-from rest_framework.exceptions import PermissionDenied
+import secrets
+from datetime import timedelta
 
-from apps.organizations.models import Organization
+from django.conf import settings
+from django.contrib.auth import get_user_model
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from drf_spectacular.utils import extend_schema, OpenApiParameter
+from rest_framework import generics, permissions, status
+from rest_framework.exceptions import PermissionDenied
+from rest_framework.response import Response
+
+from apps.organizations.models import Membership, Organization, StaffInvitation
 from apps.organizations.permissions import (
     IsOrganizationMember,
     IsOwner,
     OrganizationContextMixin,
 )
-from apps.organizations.serializers import OrganizationCreateSerializer, OrganizationSerializer
+from apps.organizations.serializers import (
+    InvitationAcceptSerializer,
+    InvitationValidationSerializer,
+    OrganizationCreateSerializer,
+    OrganizationSerializer,
+    TeamCreateSerializer,
+    TeamMemberSerializer,
+)
+
+User = get_user_model()
 
 
 class OrganizationCreateView(OrganizationContextMixin, generics.CreateAPIView):
     queryset = Organization.objects.all()
     serializer_class = OrganizationCreateSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+
+class TeamMemberListCreateView(OrganizationContextMixin, generics.ListCreateAPIView):
+    serializer_class = TeamMemberSerializer
+    permission_classes = [permissions.IsAuthenticated, IsOwner]
+
+    def get_queryset(self):
+        org = self.request.organization
+        if not org:
+            return Membership.objects.none()
+        return (
+            Membership.objects.select_related("user", "organization")
+            .filter(organization=org)
+            .order_by("user__first_name", "user__last_name", "user__email")
+        )
+
+    def create(self, request, *args, **kwargs):
+        serializer = TeamCreateSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        created = serializer.save()
+        data = {
+            "id": created["user"].id,
+            "name": created["user"].get_full_name() or created["user"].email,
+            "email": created["user"].email,
+            "role": created["invitation"].role,
+            "status": "PENDING",
+            "invitation_status": "PENDING",
+        }
+        return Response(data, status=status.HTTP_201_CREATED)
+
+
+class InvitationValidationView(OrganizationContextMixin, generics.GenericAPIView):
+    permission_classes = [permissions.AllowAny]
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                "token",
+                str,
+                OpenApiParameter.QUERY,
+                description="Invitation token to validate.",
+            )
+        ],
+        responses={200: {"type": "object", "properties": {"valid": bool, "email": str, "role": str, "expires_at": str}}},
+    )
+    def get(self, request, *args, **kwargs):
+        token = request.query_params.get("token")
+        if not token:
+            return Response({"valid": False, "detail": "A token is required."}, status=400)
+
+        serializer = InvitationValidationSerializer(data={"token": token})
+        serializer.is_valid(raise_exception=True)
+        invitation = serializer.validated_data["invitation"]
+        return Response(
+            {
+                "valid": True,
+                "email": invitation.email,
+                "role": invitation.role,
+                "expires_at": invitation.expires_at.isoformat(),
+                "organization": invitation.organization.name,
+            },
+            status=200,
+        )
+
+
+class InvitationAcceptView(OrganizationContextMixin, generics.GenericAPIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        serializer = InvitationAcceptSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        result = serializer.save()
+        return Response(result, status=status.HTTP_200_OK)
+
+
+class TeamInvitationResendView(OrganizationContextMixin, generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated, IsOwner]
+
+    def post(self, request, *args, **kwargs):
+        user = get_object_or_404(User, pk=kwargs["pk"])
+        membership = Membership.objects.filter(user=user, organization=request.organization).first()
+        if not membership:
+            raise PermissionDenied("This staff member does not belong to your organization.")
+        if membership.role == Membership.Role.OWNER:
+            raise PermissionDenied("The organization owner cannot be invited or resent.")
+
+        invitation = StaffInvitation.objects.filter(
+            organization=request.organization,
+            invited_user=user,
+            status=StaffInvitation.Status.PENDING,
+        ).order_by("-created_at").first()
+        if not invitation:
+            return Response({"detail": "No pending invitation is available to resend."}, status=400)
+
+        invitation.status = StaffInvitation.Status.REVOKED
+        invitation.save(update_fields=["status", "updated_at"])
+
+        new_token = secrets.token_urlsafe(32)
+        new_invitation = StaffInvitation.objects.create(
+            organization=request.organization,
+            invited_user=user,
+            email=user.email,
+            role=membership.role,
+            token_hash=StaffInvitation.hash_token(new_token),
+            status=StaffInvitation.Status.PENDING,
+            expires_at=timezone.now() + timedelta(hours=settings.STAFF_INVITATION_EXPIRY_HOURS),
+            created_by=request.user,
+        )
+
+        from django.core.mail import EmailMultiAlternatives
+
+        invite_url = f"{settings.FRONTEND_BASE_URL.rstrip('/')}/invite/{new_token}"
+        body = (
+            f"Hello {user.get_full_name() or user.email},\n\n"
+            f"Your invitation to join {request.organization.name} has been resent.\n\n"
+            f"Set up your account here: {invite_url}\n\n"
+            f"This invitation expires on {new_invitation.expires_at.strftime('%Y-%m-%d %H:%M %Z')}."
+        )
+        mail = EmailMultiAlternatives(
+            f"You are invited to join {request.organization.name}",
+            body,
+            settings.DEFAULT_FROM_EMAIL,
+            [user.email],
+        )
+        mail.send()
+        return Response({"detail": "Invitation resent successfully."}, status=200)
+
+
+class TeamInvitationRevokeView(OrganizationContextMixin, generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated, IsOwner]
+
+    def post(self, request, *args, **kwargs):
+        user = get_object_or_404(User, pk=kwargs["pk"])
+        membership = Membership.objects.filter(user=user, organization=request.organization).first()
+        if not membership:
+            raise PermissionDenied("This staff member does not belong to your organization.")
+        if membership.role == Membership.Role.OWNER:
+            raise PermissionDenied("The organization owner cannot be revoked.")
+
+        invitation = StaffInvitation.objects.filter(
+            organization=request.organization,
+            invited_user=user,
+            status=StaffInvitation.Status.PENDING,
+        ).order_by("-created_at").first()
+        if not invitation:
+            return Response({"detail": "No pending invitation exists to revoke."}, status=400)
+
+        invitation.status = StaffInvitation.Status.REVOKED
+        invitation.save(update_fields=["status", "updated_at"])
+        return Response({"detail": "Invitation revoked successfully."}, status=200)
+
+
+class TeamActivationView(OrganizationContextMixin, generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated, IsOwner]
+
+    def post(self, request, *args, **kwargs):
+        user = get_object_or_404(User, pk=kwargs["pk"])
+        membership = Membership.objects.select_related("organization").filter(
+            user=user,
+            organization=request.organization,
+        ).first()
+        if not membership:
+            raise PermissionDenied("This user is not part of your organization.")
+        if membership.role == Membership.Role.OWNER:
+            raise PermissionDenied("The organization owner cannot be deactivated.")
+
+        user.is_active = True
+        user.save(update_fields=["is_active"])
+        membership.is_active = True
+        membership.save(update_fields=["is_active"])
+        return Response({"detail": "Staff member activated."}, status=200)
+
+
+class TeamDeactivationView(OrganizationContextMixin, generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated, IsOwner]
+
+    def post(self, request, *args, **kwargs):
+        user = get_object_or_404(User, pk=kwargs["pk"])
+        membership = Membership.objects.select_related("organization").filter(
+            user=user,
+            organization=request.organization,
+        ).first()
+        if not membership:
+            raise PermissionDenied("This user is not part of your organization.")
+        if membership.role == Membership.Role.OWNER:
+            raise PermissionDenied("The organization owner cannot be deactivated.")
+
+        user.is_active = False
+        user.save(update_fields=["is_active"])
+        membership.is_active = False
+        membership.save(update_fields=["is_active"])
+        return Response({"detail": "Staff member deactivated."}, status=200)
 
 
 class CurrentOrganizationView(OrganizationContextMixin, generics.RetrieveUpdateAPIView):
