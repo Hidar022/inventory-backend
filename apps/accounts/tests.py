@@ -1,4 +1,5 @@
 from django.contrib.auth import get_user_model
+from django.core import mail
 from django.test import TestCase
 from rest_framework import status
 from rest_framework.test import APIClient
@@ -27,6 +28,13 @@ class RegistrationAPITests(TestCase):
         self.assertEqual(user.first_name, "Admin")
         self.assertEqual(user.last_name, "User")
         self.assertTrue(user.check_password(STRONG_PASSWORD))
+        self.assertEqual(len(mail.outbox), 1)
+        welcome_email = mail.outbox[0]
+        self.assertIn("/login", welcome_email.body)
+        self.assertIn("Set up your business", welcome_email.body)
+        self.assertNotIn(STRONG_PASSWORD, welcome_email.body)
+        self.assertEqual(len(welcome_email.alternatives), 1)
+        self.assertIn("Set up your business", welcome_email.alternatives[0][0])
 
     def test_duplicate_email_rejected(self):
         User.objects.create_user(email="owner@example.com", password=STRONG_PASSWORD)

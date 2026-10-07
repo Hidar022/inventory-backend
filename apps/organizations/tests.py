@@ -154,6 +154,8 @@ class TeamManagementAPITests(TestCase):
         self.assertTrue(User.objects.filter(email="jane@example.com").exists())
         self.assertEqual(len(mail.outbox), 1)
         self.assertIn("invite", mail.outbox[0].body)
+        self.assertEqual(len(mail.outbox[0].alternatives), 1)
+        self.assertIn("Accept invitation", mail.outbox[0].alternatives[0][0])
 
     @staticmethod
     def extract_invitation_token(email_body):

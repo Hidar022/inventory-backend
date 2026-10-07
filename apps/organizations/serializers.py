@@ -11,6 +11,7 @@ from django.utils.text import slugify
 from rest_framework import serializers
 
 from apps.organizations.models import Membership, Organization, StaffInvitation
+from common.email import send_product_email
 
 User = get_user_model()
 
@@ -194,33 +195,34 @@ class TeamCreateSerializer(serializers.Serializer):
         return {"user": user, "invitation": invitation}
 
     def send_invitation_email(self, request, invitation, raw_token):
-        from django.core.mail import EmailMultiAlternatives
-
         base_url = settings.FRONTEND_BASE_URL.rstrip("/")
         invite_url = f"{base_url}/invite/{raw_token}"
+        role = invitation.role.title()
+        inviter = request.user.get_full_name() or request.user.email
+        invitee = invitation.invited_user.get_full_name() or invitation.email
+        expiration = invitation.expires_at.strftime("%Y-%m-%d %H:%M %Z")
         subject = f"You are invited to join {invitation.organization.name}"
         body = (
-            f"Hello {invitation.invited_user.get_full_name() or invitation.email},\n\n"
-            f"{request.user.get_full_name() or request.user.email} invited you to join "
-            f"{invitation.organization.name} as a {invitation.role.title()}.\n\n"
-            f"Please set up your account here: {invite_url}\n\n"
-            f"This invitation expires on {invitation.expires_at.strftime('%Y-%m-%d %H:%M %Z')}."
+            f"Hello {invitee},\n\n"
+            f"{inviter} invited you to join {invitation.organization.name} as a {role}.\n\n"
+            "Use the secure invitation link below to set up your account. "
+            f"This invitation expires on {expiration}.\n\n"
+            f"Accept invitation: {invite_url}\n\n"
+            "Regards,\nInventory team"
         )
-        html_body = (
-            f"<p>Hello {invitation.invited_user.get_full_name() or invitation.email},</p>"
-            f"<p>{request.user.get_full_name() or request.user.email} invited you to join "
-            f"{invitation.organization.name} as a {invitation.role.title()}.</p>"
-            f"<p><a href='{invite_url}'>Set up your account</a></p>"
-            f"<p>This invitation expires on {invitation.expires_at.strftime('%Y-%m-%d %H:%M %Z')}.</p>"
+        send_product_email(
+            subject=subject,
+            recipient=invitation.email,
+            text_body=body,
+            greeting=f"Hello {invitee},",
+            heading=f"An invitation to {invitation.organization.name}",
+            paragraphs=(
+                f"{inviter} invited you to join {invitation.organization.name} as a {role}.",
+                f"Use the secure invitation link below to set up your account. This invitation expires on {expiration}.",
+            ),
+            cta_label="Accept invitation",
+            cta_url=invite_url,
         )
-        email = EmailMultiAlternatives(
-            subject,
-            body,
-            settings.DEFAULT_FROM_EMAIL,
-            [invitation.email],
-        )
-        email.attach_alternative(html_body, "text/html")
-        email.send()
 
 
 class InvitationValidationSerializer(serializers.Serializer):

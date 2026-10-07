@@ -10,6 +10,7 @@ from rest_framework import generics, permissions, status
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 
+from common.email import send_product_email
 from apps.organizations.models import Membership, Organization, StaffInvitation
 from apps.organizations.permissions import (
     IsOrganizationMember,
@@ -141,22 +142,31 @@ class TeamInvitationResendView(OrganizationContextMixin, generics.GenericAPIView
             created_by=request.user,
         )
 
-        from django.core.mail import EmailMultiAlternatives
-
         invite_url = f"{settings.FRONTEND_BASE_URL.rstrip('/')}/invite/{new_token}"
+        name = user.get_full_name() or user.email
+        role = membership.role.title()
+        expiration = new_invitation.expires_at.strftime("%Y-%m-%d %H:%M %Z")
+        subject = f"Your invitation to join {request.organization.name}"
         body = (
-            f"Hello {user.get_full_name() or user.email},\n\n"
-            f"Your invitation to join {request.organization.name} has been resent.\n\n"
-            f"Set up your account here: {invite_url}\n\n"
-            f"This invitation expires on {new_invitation.expires_at.strftime('%Y-%m-%d %H:%M %Z')}."
+            f"Hello {name},\n\n"
+            f"Your invitation to join {request.organization.name} as a {role} has been resent.\n\n"
+            f"This invitation expires on {expiration}.\n\n"
+            f"Accept invitation: {invite_url}\n\n"
+            "Regards,\nInventory team"
         )
-        mail = EmailMultiAlternatives(
-            f"You are invited to join {request.organization.name}",
-            body,
-            settings.DEFAULT_FROM_EMAIL,
-            [user.email],
+        send_product_email(
+            subject=subject,
+            recipient=user.email,
+            text_body=body,
+            greeting=f"Hello {name},",
+            heading=f"Your invitation to {request.organization.name}",
+            paragraphs=(
+                f"Your invitation to join {request.organization.name} as a {role} has been resent.",
+                f"Use the secure invitation link below to set up your account. This invitation expires on {expiration}.",
+            ),
+            cta_label="Accept invitation",
+            cta_url=invite_url,
         )
-        mail.send()
         return Response({"detail": "Invitation resent successfully."}, status=200)
 
 

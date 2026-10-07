@@ -2,13 +2,13 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.core.mail import EmailMultiAlternatives
 from django.db import transaction
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from apps.organizations.models import Membership
 from apps.organizations.serializers import OrganizationSummarySerializer
+from common.email import send_product_email
 
 User = get_user_model()
 
@@ -42,20 +42,28 @@ class RegisterSerializer(serializers.ModelSerializer):
         if not user.email:
             return
         name = user.get_full_name() or user.email
-        subject = "Welcome to Inventory SaaS"
+        login_url = f"{settings.FRONTEND_BASE_URL.rstrip('/')}/login"
+        subject = "Your Inventory account is ready"
         body = (
             f"Hello {name},\n\n"
-            "Welcome to Inventory SaaS. Your account has been created successfully.\n\n"
-            f"Login here: {settings.FRONTEND_BASE_URL.rstrip('/')}/login\n\n"
-            "Next steps: create or join an organization, then invite your team and start managing inventory."
+            "Your account has been created successfully. You are ready to set up your inventory business.\n\n"
+            "Next, sign in to create your organization and add your business details.\n\n"
+            f"Set up your business: {login_url}\n\n"
+            "Regards,\nInventory team"
         )
-        email = EmailMultiAlternatives(
-            subject,
-            body,
-            settings.DEFAULT_FROM_EMAIL,
-            [user.email],
+        send_product_email(
+            subject=subject,
+            recipient=user.email,
+            text_body=body,
+            greeting=f"Hello {name},",
+            heading="Your account is ready",
+            paragraphs=(
+                "Your account has been created successfully. You are ready to set up your inventory business.",
+                "Sign in to create your organization and add your business details.",
+            ),
+            cta_label="Set up your business",
+            cta_url=login_url,
         )
-        email.send()
 
 
 class UserSerializer(serializers.ModelSerializer):
