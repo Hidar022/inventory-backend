@@ -5,6 +5,7 @@ from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
 from apps.catalog.models import Product
+from apps.dashboard.services import log_activity_event
 from apps.inventory.models import StockMovement
 from apps.purchases.models import Purchase, PurchaseItem
 
@@ -67,11 +68,24 @@ def receive_purchase(*, organization, purchase_id, actor):
     purchase.save(update_fields=["status", "received_at", "updated_at"])
     StockMovement.objects.bulk_create(stock_movements)
     purchase.refresh_from_db()
+    log_activity_event(
+        organization=organization,
+        actor=actor,
+        action="purchase.received",
+        entity_type="Purchase",
+        entity_id=str(purchase.pk),
+        description=f"Received purchase {purchase.reference_number or purchase.pk}",
+        metadata={
+            "reference_number": purchase.reference_number,
+            "total": str(purchase.total),
+            "item_count": len(items),
+        },
+    )
     return purchase
 
 
 @transaction.atomic
-def cancel_purchase(*, organization, purchase_id):
+def cancel_purchase(*, organization, purchase_id, actor):
     purchase = (
         Purchase.objects.select_for_update()
         .get(pk=purchase_id, organization=organization)
@@ -80,6 +94,15 @@ def cancel_purchase(*, organization, purchase_id):
         raise ValidationError({"status": ["Only DRAFT purchases can be cancelled."]})
     purchase.status = Purchase.Status.CANCELLED
     purchase.save(update_fields=["status", "updated_at"])
+    log_activity_event(
+        organization=organization,
+        actor=actor,
+        action="purchase.cancelled",
+        entity_type="Purchase",
+        entity_id=str(purchase.pk),
+        description=f"Cancelled purchase {purchase.reference_number or purchase.pk}",
+        metadata={"reference_number": purchase.reference_number},
+    )
     return purchase
 
 

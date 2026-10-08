@@ -9,6 +9,7 @@ from rest_framework.response import Response
 
 from apps.catalog.models import Category, Product
 from apps.catalog.serializers import CategorySerializer, ProductSerializer
+from apps.dashboard.services import log_activity_event
 from apps.organizations.permissions import (
 	IsOrganizationMember,
 	IsOwnerOrManager,
@@ -88,10 +89,36 @@ class CatalogViewSet(
 		organization = getattr(self.request, "organization", None)
 		if organization is None:
 			raise PermissionDenied("You do not have access to an active organization.")
-		save_catalog_serializer(serializer, organization=organization)
+		with transaction.atomic():
+			instance = save_catalog_serializer(serializer, organization=organization)
+			model_name = instance._meta.model_name
+			label = getattr(instance, "name", None) or getattr(instance, "sku", None) or str(instance.pk)
+			log_activity_event(
+				organization=organization,
+				actor=self.request.user,
+				action=f"{model_name}.created",
+				entity_type=instance.__class__.__name__,
+				entity_id=str(instance.pk),
+				description=f"Created {instance.__class__.__name__} {label}",
+				metadata={"name": label},
+			)
+		return instance
 
 	def perform_update(self, serializer):
-		save_catalog_serializer(serializer)
+		changed_fields = sorted(serializer.validated_data)
+		with transaction.atomic():
+			instance = save_catalog_serializer(serializer)
+			label = getattr(instance, "name", None) or getattr(instance, "sku", None) or str(instance.pk)
+			log_activity_event(
+				organization=instance.organization,
+				actor=self.request.user,
+				action=f"{instance._meta.model_name}.updated",
+				entity_type=instance.__class__.__name__,
+				entity_id=str(instance.pk),
+				description=f"Updated {instance.__class__.__name__} {label}",
+				metadata={"changed_fields": changed_fields},
+			)
+		return instance
 
 	def destroy(self, request, *args, **kwargs):
 		raise MethodNotAllowed("DELETE", detail="Catalog records cannot be deleted.")
@@ -104,8 +131,18 @@ class CatalogViewSet(
 	)
 	def deactivate(self, request, *args, **kwargs):
 		instance = self.get_object()
-		instance.is_active = False
-		instance.save(update_fields=["is_active", "updated_at"])
+		if instance.is_active:
+			with transaction.atomic():
+				instance.is_active = False
+				instance.save(update_fields=["is_active", "updated_at"])
+				log_activity_event(
+					organization=instance.organization,
+					actor=request.user,
+					action=f"{instance._meta.model_name}.deactivated",
+					entity_type=instance.__class__.__name__,
+					entity_id=str(instance.pk),
+					description=f"Deactivated {instance.__class__.__name__} {getattr(instance, 'name', instance.pk)}",
+				)
 		return Response(self.get_serializer(instance).data, status=status.HTTP_200_OK)
 
 	@action(detail=True, methods=["post"])
@@ -116,8 +153,18 @@ class CatalogViewSet(
 	)
 	def reactivate(self, request, *args, **kwargs):
 		instance = self.get_object()
-		instance.is_active = True
-		instance.save(update_fields=["is_active", "updated_at"])
+		if not instance.is_active:
+			with transaction.atomic():
+				instance.is_active = True
+				instance.save(update_fields=["is_active", "updated_at"])
+				log_activity_event(
+					organization=instance.organization,
+					actor=request.user,
+					action=f"{instance._meta.model_name}.reactivated",
+					entity_type=instance.__class__.__name__,
+					entity_id=str(instance.pk),
+					description=f"Reactivated {instance.__class__.__name__} {getattr(instance, 'name', instance.pk)}",
+				)
 		return Response(self.get_serializer(instance).data, status=status.HTTP_200_OK)
 
 

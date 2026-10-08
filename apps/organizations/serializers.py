@@ -10,6 +10,7 @@ from django.utils import timezone
 from django.utils.text import slugify
 from rest_framework import serializers
 
+from apps.dashboard.services import log_activity_event
 from apps.organizations.models import Membership, Organization, StaffInvitation
 from common.email import send_product_email
 
@@ -125,6 +126,15 @@ class OrganizationCreateSerializer(serializers.ModelSerializer):
                 organization=organization,
                 role=Membership.Role.OWNER,
                 is_active=True,
+            )
+            log_activity_event(
+                organization=organization,
+                actor=user,
+                action="organization.created",
+                entity_type="Organization",
+                entity_id=str(organization.pk),
+                description=f"Created organization {organization.name}",
+                metadata={"name": organization.name, "currency": organization.currency},
             )
 
         return organization
@@ -305,6 +315,15 @@ class InvitationAcceptSerializer(serializers.Serializer):
             invitation.status = StaffInvitation.Status.ACCEPTED
             invitation.accepted_at = timezone.now()
             invitation.save(update_fields=["status", "accepted_at", "updated_at"])
+            log_activity_event(
+                organization=invitation.organization,
+                actor=user,
+                action="team.invitation_accepted",
+                entity_type="StaffInvitation",
+                entity_id=str(invitation.pk),
+                description=f"Accepted invitation as {membership.role.lower()}",
+                metadata={"role": membership.role},
+            )
 
         return {
             "detail": "Account setup completed successfully.",

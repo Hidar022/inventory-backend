@@ -11,6 +11,7 @@ from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from apps.accounts.models import PasswordResetToken
+from apps.dashboard.services import log_activity_event
 from apps.organizations.models import Membership
 from apps.organizations.serializers import OrganizationSummarySerializer
 from common.email import send_product_email
@@ -100,6 +101,19 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
 
     def validate(self, attrs):
         data = super().validate(attrs)
+        membership = Membership.objects.filter(
+            user=self.user,
+            is_active=True,
+        ).select_related("organization").order_by("-created_at").first()
+        if membership:
+            log_activity_event(
+                organization=membership.organization,
+                actor=self.user,
+                action="authentication.login",
+                entity_type="User",
+                entity_id=str(self.user.pk),
+                description="Signed in",
+            )
         return data
 
 

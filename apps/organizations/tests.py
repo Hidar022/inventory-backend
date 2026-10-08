@@ -4,6 +4,7 @@ from django.test import TestCase
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from apps.dashboard.models import ActivityEvent
 from apps.organizations.models import Membership, Organization
 
 User = get_user_model()
@@ -32,6 +33,12 @@ class OrganizationAPITests(TestCase):
         self.assertEqual(org.business_type, "Retail")
         self.assertEqual(org.currency, "NGN")
         self.assertTrue(org.memberships.filter(user=self.owner_user, role=Membership.Role.OWNER, is_active=True).exists())
+        self.assertTrue(ActivityEvent.objects.filter(
+            organization=org,
+            actor=self.owner_user,
+            action="organization.created",
+            entity_id=str(org.pk),
+        ).exists())
 
     def test_current_organization_can_be_retrieved(self):
         org = Organization.objects.create(name="My Business", slug="my-business")
@@ -58,6 +65,12 @@ class OrganizationAPITests(TestCase):
         org.refresh_from_db()
         self.assertEqual(org.name, "Updated Business")
         self.assertEqual(org.business_type, "Wholesale")
+        self.assertTrue(ActivityEvent.objects.filter(
+            organization=org,
+            actor=self.owner_user,
+            action="organization.updated",
+            entity_id=str(org.pk),
+        ).exists())
 
     def test_manager_cannot_update_current_organization(self):
         org = Organization.objects.create(name="My Business", slug="my-business")
@@ -151,6 +164,11 @@ class TeamManagementAPITests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(ActivityEvent.objects.filter(
+            organization=self.org,
+            actor=self.owner,
+            action="team.invitation_created",
+        ).exists())
         self.assertTrue(User.objects.filter(email="jane@example.com").exists())
         self.assertEqual(len(mail.outbox), 1)
         self.assertIn("invite", mail.outbox[0].body)
@@ -206,6 +224,11 @@ class TeamManagementAPITests(TestCase):
         self.assertTrue(user.is_active)
         self.assertTrue(user.check_password("StrongPass123!"))
         self.assertTrue(user.organization_memberships.filter(organization=self.org, is_active=True).exists())
+        self.assertTrue(ActivityEvent.objects.filter(
+            organization=self.org,
+            actor=user,
+            action="team.invitation_accepted",
+        ).exists())
 
     def test_deactivated_staff_cannot_authenticate(self):
         self.client.force_authenticate(user=self.owner)
@@ -229,6 +252,12 @@ class TeamManagementAPITests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(ActivityEvent.objects.filter(
+            organization=self.org,
+            actor=self.owner,
+            action="team.member_deactivated",
+            entity_id=str(Membership.objects.get(user=deactivated_user, organization=self.org).pk),
+        ).exists())
 
         login_response = self.client.post(
             "/api/v1/auth/token/",
@@ -236,3 +265,14 @@ class TeamManagementAPITests(TestCase):
             format="json",
         )
         self.assertEqual(login_response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        activation = self.client.post(
+            f"/api/v1/team/{deactivated_user.pk}/activate/",
+            format="json",
+        )
+        self.assertEqual(activation.status_code, status.HTTP_200_OK)
+        self.assertTrue(ActivityEvent.objects.filter(
+            organization=self.org,
+            actor=self.owner,
+            action="team.member_activated",
+        ).exists())

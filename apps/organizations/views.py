@@ -3,6 +3,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
@@ -12,6 +13,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 
 from common.email import send_product_email
+from apps.dashboard.services import log_activity_event
 from apps.organizations.models import Membership, Organization, StaffInvitation
 from apps.organizations.permissions import (
     IsOrganizationMember,
@@ -53,7 +55,17 @@ class TeamMemberListCreateView(OrganizationContextMixin, generics.ListCreateAPIV
     def create(self, request, *args, **kwargs):
         serializer = TeamCreateSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
-        created = serializer.save()
+        with transaction.atomic():
+            created = serializer.save()
+            log_activity_event(
+                organization=request.organization,
+                actor=request.user,
+                action="team.invitation_created",
+                entity_type="StaffInvitation",
+                entity_id=str(created["invitation"].pk),
+                description=f"Invited {created['invitation'].email} as {created['invitation'].role.lower()}",
+                metadata={"role": created["invitation"].role},
+            )
         data = {
             "id": created["user"].id,
             "name": created["user"].get_full_name() or created["user"].email,
@@ -141,20 +153,30 @@ class TeamInvitationResendView(OrganizationContextMixin, generics.GenericAPIView
         if not invitation:
             return Response({"detail": "No pending invitation is available to resend."}, status=400)
 
-        invitation.status = StaffInvitation.Status.REVOKED
-        invitation.save(update_fields=["status", "updated_at"])
+        with transaction.atomic():
+            invitation.status = StaffInvitation.Status.REVOKED
+            invitation.save(update_fields=["status", "updated_at"])
 
-        new_token = secrets.token_urlsafe(32)
-        new_invitation = StaffInvitation.objects.create(
-            organization=request.organization,
-            invited_user=user,
-            email=user.email,
-            role=membership.role,
-            token_hash=StaffInvitation.hash_token(new_token),
-            status=StaffInvitation.Status.PENDING,
-            expires_at=timezone.now() + timedelta(hours=settings.STAFF_INVITATION_EXPIRY_HOURS),
-            created_by=request.user,
-        )
+            new_token = secrets.token_urlsafe(32)
+            new_invitation = StaffInvitation.objects.create(
+                organization=request.organization,
+                invited_user=user,
+                email=user.email,
+                role=membership.role,
+                token_hash=StaffInvitation.hash_token(new_token),
+                status=StaffInvitation.Status.PENDING,
+                expires_at=timezone.now() + timedelta(hours=settings.STAFF_INVITATION_EXPIRY_HOURS),
+                created_by=request.user,
+            )
+            log_activity_event(
+                organization=request.organization,
+                actor=request.user,
+                action="team.invitation_resent",
+                entity_type="StaffInvitation",
+                entity_id=str(new_invitation.pk),
+                description=f"Resent invitation to {new_invitation.email}",
+                metadata={"role": new_invitation.role},
+            )
 
         invite_url = f"{settings.FRONTEND_BASE_URL.rstrip('/')}/invite/{new_token}"
         name = user.get_full_name() or user.email
@@ -205,7 +227,16 @@ class TeamInvitationRevokeView(OrganizationContextMixin, generics.GenericAPIView
             return Response({"detail": "No pending invitation exists to revoke."}, status=400)
 
         invitation.status = StaffInvitation.Status.REVOKED
-        invitation.save(update_fields=["status", "updated_at"])
+        with transaction.atomic():
+            invitation.save(update_fields=["status", "updated_at"])
+            log_activity_event(
+                organization=request.organization,
+                actor=request.user,
+                action="team.invitation_revoked",
+                entity_type="StaffInvitation",
+                entity_id=str(invitation.pk),
+                description=f"Revoked invitation for {invitation.email}",
+            )
         return Response({"detail": "Invitation revoked successfully."}, status=200)
 
 
@@ -224,10 +255,21 @@ class TeamActivationView(OrganizationContextMixin, generics.GenericAPIView):
         if membership.role == Membership.Role.OWNER:
             raise PermissionDenied("The organization owner cannot be deactivated.")
 
-        user.is_active = True
-        user.save(update_fields=["is_active"])
-        membership.is_active = True
-        membership.save(update_fields=["is_active"])
+        if not membership.is_active or not user.is_active:
+            with transaction.atomic():
+                user.is_active = True
+                user.save(update_fields=["is_active"])
+                membership.is_active = True
+                membership.save(update_fields=["is_active"])
+                log_activity_event(
+                    organization=request.organization,
+                    actor=request.user,
+                    action="team.member_activated",
+                    entity_type="Membership",
+                    entity_id=str(membership.pk),
+                    description=f"Activated team member {user.email}",
+                    metadata={"role": membership.role},
+                )
         return Response({"detail": "Staff member activated."}, status=200)
 
 
@@ -246,10 +288,21 @@ class TeamDeactivationView(OrganizationContextMixin, generics.GenericAPIView):
         if membership.role == Membership.Role.OWNER:
             raise PermissionDenied("The organization owner cannot be deactivated.")
 
-        user.is_active = False
-        user.save(update_fields=["is_active"])
-        membership.is_active = False
-        membership.save(update_fields=["is_active"])
+        if membership.is_active or user.is_active:
+            with transaction.atomic():
+                user.is_active = False
+                user.save(update_fields=["is_active"])
+                membership.is_active = False
+                membership.save(update_fields=["is_active"])
+                log_activity_event(
+                    organization=request.organization,
+                    actor=request.user,
+                    action="team.member_deactivated",
+                    entity_type="Membership",
+                    entity_id=str(membership.pk),
+                    description=f"Deactivated team member {user.email}",
+                    metadata={"role": membership.role},
+                )
         return Response({"detail": "Staff member deactivated."}, status=200)
 
 
@@ -269,3 +322,17 @@ class CurrentOrganizationView(OrganizationContextMixin, generics.RetrieveUpdateA
         if not membership or not membership.is_active:
             raise PermissionDenied("You do not have access to an active organization.")
         return membership.organization
+
+    def perform_update(self, serializer):
+        changed_fields = sorted(serializer.validated_data)
+        with transaction.atomic():
+            organization = serializer.save()
+            log_activity_event(
+                organization=organization,
+                actor=self.request.user,
+                action="organization.updated",
+                entity_type="Organization",
+                entity_id=str(organization.pk),
+                description=f"Updated organization settings for {organization.name}",
+                metadata={"changed_fields": changed_fields},
+            )

@@ -5,6 +5,7 @@ from django.db.models import Sum
 from rest_framework.exceptions import NotFound, ValidationError
 
 from apps.catalog.models import Product
+from apps.dashboard.services import log_activity_event
 from apps.inventory.models import StockMovement
 from apps.sales.models import Sale, SaleItem, SaleReturn, SaleReturnItem
 
@@ -137,4 +138,18 @@ def process_sale_return(*, organization, sale_id, processed_by, reason, refund_m
     )
     sale.status = Sale.Status.FULLY_RETURNED if fully_returned else Sale.Status.PARTIALLY_RETURNED
     sale.save(update_fields=["status", "updated_at"])
+    log_activity_event(
+        organization=organization,
+        actor=processed_by,
+        action="sale.returned",
+        entity_type="SaleReturn",
+        entity_id=str(sale_return.pk),
+        description=f"Processed return for sale {sale.receipt_number}",
+        metadata={
+            "receipt_number": sale.receipt_number,
+            "refund_amount": str(refund_amount),
+            "refund_method": refund_method,
+            "item_count": len(return_item_values),
+        },
+    )
     return sale_return

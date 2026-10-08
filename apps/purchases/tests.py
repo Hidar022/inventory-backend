@@ -6,6 +6,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from apps.catalog.models import Category, Product
+from apps.dashboard.models import ActivityEvent
 from apps.inventory.models import StockMovement
 from apps.organizations.models import Membership, Organization
 from apps.purchases.models import Purchase, PurchaseItem, Supplier
@@ -85,6 +86,12 @@ class PurchaseAPITests(TestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         supplier_id = response.data["id"]
+        self.assertTrue(ActivityEvent.objects.filter(
+            organization=self.org_a,
+            actor=self.owner,
+            action="supplier.created",
+            entity_id=supplier_id,
+        ).exists())
         self.assertEqual(self.client.get("/api/v1/suppliers/").data["count"], 2)
         self.assertEqual(
             self.client.get(f"/api/v1/suppliers/{supplier_id}/").status_code,
@@ -97,9 +104,21 @@ class PurchaseAPITests(TestCase):
         )
         self.assertEqual(patch_response.status_code, status.HTTP_200_OK)
         self.assertEqual(patch_response.data["phone"], "888")
+        self.assertTrue(ActivityEvent.objects.filter(
+            organization=self.org_a,
+            actor=self.owner,
+            action="supplier.updated",
+            entity_id=supplier_id,
+        ).exists())
         deactivate_response = self.client.post(f"/api/v1/suppliers/{supplier_id}/deactivate/")
         self.assertEqual(deactivate_response.status_code, status.HTTP_200_OK)
         self.assertFalse(deactivate_response.data["is_active"])
+        self.assertTrue(ActivityEvent.objects.filter(
+            organization=self.org_a,
+            actor=self.owner,
+            action="supplier.deactivated",
+            entity_id=supplier_id,
+        ).exists())
 
         self.authenticate(self.cashier)
         list_response = self.client.get("/api/v1/suppliers/")
@@ -136,6 +155,12 @@ class PurchaseAPITests(TestCase):
         self.assertEqual(purchase.total, Decimal("8.00"))
         self.assertEqual(purchase.items.get().product_name, "Notebook")
         self.assertEqual(purchase.items.get().line_total, Decimal("8.00"))
+        self.assertTrue(ActivityEvent.objects.filter(
+            organization=self.org_a,
+            actor=self.owner,
+            action="purchase.created",
+            entity_id=str(purchase.pk),
+        ).exists())
 
         self.assertEqual(
             self.client.get(f"/api/v1/purchases/{purchase.pk}/").status_code,
@@ -221,6 +246,12 @@ class PurchaseAPITests(TestCase):
         self.assertEqual(movement.previous_quantity, 5)
         self.assertEqual(movement.new_quantity, 8)
         self.assertEqual(movement.movement_type, StockMovement.MovementType.STOCK_IN)
+        self.assertTrue(ActivityEvent.objects.filter(
+            organization=self.org_a,
+            actor=self.owner,
+            action="purchase.received",
+            entity_id=str(purchase.pk),
+        ).exists())
 
     def test_purchase_receive_is_idempotent_and_cannot_be_received_twice(self):
         self.authenticate(self.owner)
@@ -276,6 +307,12 @@ class PurchaseAPITests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         purchase.refresh_from_db()
         self.assertEqual(purchase.status, Purchase.Status.CANCELLED)
+        self.assertTrue(ActivityEvent.objects.filter(
+            organization=self.org_a,
+            actor=self.owner,
+            action="purchase.cancelled",
+            entity_id=str(purchase.pk),
+        ).exists())
         self.product.refresh_from_db()
         self.assertEqual(self.product.stock_quantity, 5)
         self.assertEqual(StockMovement.objects.filter(reference_id=str(purchase.pk)).count(), 0)

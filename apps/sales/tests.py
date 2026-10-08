@@ -13,6 +13,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from apps.catalog.models import Category, Product
+from apps.dashboard.models import ActivityEvent
 from apps.inventory.models import StockMovement
 from apps.organizations.models import Membership, Organization
 from apps.sales.models import Payment, Sale, SaleItem, SaleReturn, SaleReturnItem
@@ -92,6 +93,13 @@ class PosCheckoutAPITests(TestCase):
             StockMovement.objects.get(product=self.product).movement_type,
             StockMovement.MovementType.SALE_OUT,
         )
+        event = ActivityEvent.objects.get(
+            organization=self.org_a,
+            action="sale.created",
+            entity_id=response.data["id"],
+        )
+        self.assertEqual(event.actor, self.owner)
+        self.assertEqual(event.metadata["receipt_number"], response.data["receipt_number"])
 
     def test_cashier_discount_is_rejected(self):
         self.authenticate(self.cashier)
@@ -195,6 +203,14 @@ class PosCheckoutAPITests(TestCase):
         self.assertEqual(SaleItem.objects.filter(sale_id=first.data["id"]).count(), 1)
         self.assertEqual(Payment.objects.filter(sale_id=first.data["id"]).count(), 1)
         self.assertEqual(StockMovement.objects.filter(product=self.product).count(), 1)
+        self.assertEqual(
+            ActivityEvent.objects.filter(
+                organization=self.org_a,
+                action="sale.created",
+                entity_id=first.data["id"],
+            ).count(),
+            1,
+        )
         self.assertEqual(first.data["id"], second.data["id"])
 
     def test_same_key_different_payload_conflicts(self):
@@ -705,6 +721,13 @@ class SaleReturnAPITests(TestCase):
         self.assertEqual(movement.quantity, 1)
         self.assertEqual((movement.previous_quantity, movement.new_quantity), (7, 8))
         self.assertEqual(movement.reference_type, "sale_return")
+        event = ActivityEvent.objects.get(
+            organization=self.organization,
+            action="sale.returned",
+            entity_id=partial.data["id"],
+        )
+        self.assertEqual(event.actor, self.owner)
+        self.assertEqual(event.metadata["refund_amount"], "5.00")
 
         full = self.client.post(
             self.return_url(),

@@ -4,6 +4,9 @@ from django.test import TestCase
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from apps.dashboard.models import ActivityEvent
+from apps.organizations.models import Membership, Organization
+
 User = get_user_model()
 STRONG_PASSWORD = "StrongPass123!"
 
@@ -166,6 +169,12 @@ class AuthenticationAPITests(TestCase):
         self.user = User.objects.create_user(email="owner@example.com", password=STRONG_PASSWORD)
 
     def test_valid_login_succeeds(self):
+        organization = Organization.objects.create(name="Login org", slug="login-org")
+        Membership.objects.create(
+            user=self.user,
+            organization=organization,
+            role=Membership.Role.OWNER,
+        )
         response = self.client.post(
             "/api/v1/auth/token/",
             {"email": "owner@example.com", "password": STRONG_PASSWORD},
@@ -175,6 +184,13 @@ class AuthenticationAPITests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn("access", response.data)
         self.assertIn("refresh", response.data)
+        event = ActivityEvent.objects.get(
+            organization=organization,
+            action="authentication.login",
+        )
+        self.assertEqual(event.actor, self.user)
+        self.assertEqual(event.entity_id, str(self.user.pk))
+        self.assertEqual(event.metadata, {})
 
     def test_invalid_password_rejected(self):
         response = self.client.post(

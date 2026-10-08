@@ -9,6 +9,7 @@ from rest_framework.exceptions import MethodNotAllowed, PermissionDenied, Valida
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.dashboard.services import log_activity_event
 from apps.expenses.models import Expense, ExpenseCategory
 from apps.expenses.serializers import (
     CashSummarySerializer,
@@ -59,14 +60,33 @@ class ExpenseCategoryViewSet(
             raise PermissionDenied("You do not have access to an active organization.")
         try:
             with transaction.atomic():
-                serializer.save(organization=organization)
+                category = serializer.save(organization=organization)
+                log_activity_event(
+                    organization=organization,
+                    actor=self.request.user,
+                    action="expense_category.created",
+                    entity_type="ExpenseCategory",
+                    entity_id=str(category.pk),
+                    description=f"Created expense category {category.name}",
+                    metadata={"name": category.name},
+                )
         except IntegrityError as exc:
             raise ValidationError({"name": ["This category name is already in use."]}) from exc
 
     def perform_update(self, serializer):
+        changed_fields = sorted(serializer.validated_data)
         try:
             with transaction.atomic():
-                serializer.save()
+                category = serializer.save()
+                log_activity_event(
+                    organization=category.organization,
+                    actor=self.request.user,
+                    action="expense_category.updated",
+                    entity_type="ExpenseCategory",
+                    entity_id=str(category.pk),
+                    description=f"Updated expense category {category.name}",
+                    metadata={"changed_fields": changed_fields},
+                )
         except IntegrityError as exc:
             raise ValidationError({"name": ["This category name is already in use."]}) from exc
 
@@ -77,8 +97,18 @@ class ExpenseCategoryViewSet(
     @extend_schema(request=None, responses={200: ExpenseCategorySerializer})
     def deactivate(self, request, *args, **kwargs):
         category = self.get_object()
-        category.is_active = False
-        category.save(update_fields=["is_active", "updated_at"])
+        if category.is_active:
+            with transaction.atomic():
+                category.is_active = False
+                category.save(update_fields=["is_active", "updated_at"])
+                log_activity_event(
+                    organization=category.organization,
+                    actor=request.user,
+                    action="expense_category.deactivated",
+                    entity_type="ExpenseCategory",
+                    entity_id=str(category.pk),
+                    description=f"Deactivated expense category {category.name}",
+                )
         return Response(self.get_serializer(category).data, status=status.HTTP_200_OK)
 
 
@@ -109,7 +139,23 @@ class ExpenseViewSet(
         organization = getattr(self.request, "organization", None)
         if organization is None:
             raise PermissionDenied("You do not have access to an active organization.")
-        serializer.save(organization=organization, created_by=self.request.user)
+        with transaction.atomic():
+            instance = serializer.save(organization=organization, created_by=self.request.user)
+            log_activity_event(
+                organization=organization,
+                actor=self.request.user,
+                action="expense.created",
+                entity_type="Expense",
+                entity_id=str(instance.pk),
+                description=f"Recorded expense {instance.description or 'expense'} for {instance.amount}",
+                metadata={
+                    "amount": str(instance.amount),
+                    "category_id": str(instance.category_id),
+                    "payment_method": instance.payment_method,
+                    "expense_date": instance.expense_date.isoformat(),
+                },
+            )
+        return instance
 
 class DailyCashSummaryView(OrganizationContextMixin, APIView):
     permission_classes = [

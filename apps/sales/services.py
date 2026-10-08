@@ -8,6 +8,7 @@ from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
 from apps.catalog.models import Product
+from apps.dashboard.services import log_activity_event
 from apps.inventory.models import StockMovement
 from apps.organizations.models import Organization
 from apps.sales.models import Payment, Sale, SaleItem
@@ -272,6 +273,19 @@ def checkout_sale(request, validated_data):
                 )
 
             sale.refresh_from_db()
+            log_activity_event(
+                organization=organization,
+                actor=user,
+                action="sale.created",
+                entity_type="Sale",
+                entity_id=str(sale.pk),
+                description=f"Completed sale {sale.receipt_number}",
+                metadata={
+                    "receipt_number": sale.receipt_number,
+                    "total": str(sale.total),
+                    "item_count": len(items),
+                },
+            )
             return sale, True
     except IntegrityError:
         sale = Sale.objects.filter(organization=organization, idempotency_key=idempotency_key).first()

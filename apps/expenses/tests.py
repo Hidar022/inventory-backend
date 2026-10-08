@@ -6,6 +6,7 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from apps.dashboard.models import ActivityEvent
 from apps.expenses.models import Expense, ExpenseCategory
 from apps.organizations.models import Membership, Organization
 from apps.purchases.models import Purchase, Supplier
@@ -98,6 +99,15 @@ class ExpensesAPITests(TestCase):
             self.client.delete(f"/api/v1/expense-categories/{category_id}/").status_code,
             status.HTTP_405_METHOD_NOT_ALLOWED,
         )
+        for action in (
+            "expense_category.created",
+            "expense_category.updated",
+            "expense_category.deactivated",
+        ):
+            self.assertTrue(
+                ActivityEvent.objects.filter(organization=self.org_a, action=action).exists(),
+                action,
+            )
 
         self.authenticate(self.cashier)
         self.assertEqual(self.client.get("/api/v1/expense-categories/").status_code, 200)
@@ -162,6 +172,14 @@ class ExpensesAPITests(TestCase):
         self.assertEqual(expense.created_by, self.owner)
         self.assertEqual(expense.amount, Decimal("12.34"))
         self.assertEqual(expense.category, self.category)
+        event = ActivityEvent.objects.get(
+            organization=self.org_a,
+            action="expense.created",
+            entity_id=str(expense.pk),
+        )
+        self.assertEqual(event.actor, self.owner)
+        self.assertEqual(event.metadata["payment_method"], Payment.Method.CASH)
+        self.assertNotIn("description", event.metadata)
         self.assertEqual(self.client.get("/api/v1/expenses/").data["count"], 1)
         self.client.post(f"/api/v1/expense-categories/{self.category.pk}/deactivate/")
         self.assertEqual(

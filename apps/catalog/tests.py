@@ -10,6 +10,7 @@ from rest_framework.test import APIClient
 
 from apps.catalog.models import Category, Product
 from apps.catalog.serializers import CategorySerializer, ProductSerializer
+from apps.dashboard.models import ActivityEvent
 from apps.organizations.models import Membership, Organization
 
 User = get_user_model()
@@ -126,6 +127,16 @@ class CatalogAPITests(TestCase):
 			status.HTTP_403_FORBIDDEN,
 		)
 		self.assertEqual(self.client.get(self.category_url()).status_code, status.HTTP_200_OK)
+		for action in (
+			"category.created",
+			"category.updated",
+			"category.deactivated",
+			"category.reactivated",
+		):
+			self.assertTrue(
+				ActivityEvent.objects.filter(organization=self.org_a, action=action).exists(),
+				action,
+			)
 
 	def test_category_names_are_normalized_and_unique_per_organization(self):
 		self.authenticate(self.owner)
@@ -174,6 +185,16 @@ class CatalogAPITests(TestCase):
 			self.assertEqual(
 				self.client.post(f"/api/v1/products/{product_id}/reactivate/").status_code,
 				status.HTTP_200_OK,
+			)
+		for action in (
+			"product.created",
+			"product.updated",
+			"product.deactivated",
+			"product.reactivated",
+		):
+			self.assertTrue(
+				ActivityEvent.objects.filter(organization=self.org_a, action=action).exists(),
+				action,
 			)
 
 		self.authenticate(self.cashier)

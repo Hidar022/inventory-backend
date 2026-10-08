@@ -11,6 +11,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from apps.catalog.models import Category, Product
+from apps.dashboard.models import ActivityEvent
 from apps.inventory.models import StockMovement
 from apps.inventory.services import create_stock_movement
 from apps.organizations.models import Membership, Organization
@@ -159,6 +160,13 @@ class InventoryAPITests(TestCase):
 		self.assertEqual(movement.created_by, self.owner)
 		self.assertEqual(movement.organization, self.org_a)
 		self.assertEqual(response.data["movement_type"], StockMovement.MovementType.STOCK_IN)
+		event = ActivityEvent.objects.get(
+			organization=self.org_a,
+			action="inventory.stock_added",
+		)
+		self.assertEqual(event.actor, self.owner)
+		self.assertEqual(event.entity_id, str(movement.pk))
+		self.assertEqual(event.metadata["previous_quantity"], 10)
 
 	def test_stock_in_rejects_invalid_quantity_inactive_and_empty_reason(self):
 		self.authenticate(self.owner)
@@ -187,6 +195,13 @@ class InventoryAPITests(TestCase):
 		self.assertEqual(decrease.data["quantity"], -3)
 		self.assertEqual(decrease.data["new_quantity"], 12)
 		self.assertEqual(decrease.data["reason"], "Damaged stock")
+		self.assertEqual(
+			ActivityEvent.objects.filter(
+				organization=self.org_a,
+				action="inventory.adjusted",
+			).count(),
+			2,
+		)
 		self.assertEqual(self.post_adjustment(self.product, 0).status_code, status.HTTP_400_BAD_REQUEST)
 		self.assertEqual(
 			self.client.post(

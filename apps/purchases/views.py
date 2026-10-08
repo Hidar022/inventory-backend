@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet, mixins
 
 from apps.catalog.models import Product
+from apps.dashboard.services import log_activity_event
 from apps.organizations.permissions import (
     IsOrganizationMember,
     IsOwnerOrManager,
@@ -54,16 +55,47 @@ class SupplierViewSet(
         return queryset.order_by("name", "-created_at")
 
     def perform_create(self, serializer):
-        serializer.save(organization=self.request.organization)
+        with transaction.atomic():
+            supplier = serializer.save(organization=self.request.organization)
+            log_activity_event(
+                organization=supplier.organization,
+                actor=self.request.user,
+                action="supplier.created",
+                entity_type="Supplier",
+                entity_id=str(supplier.pk),
+                description=f"Created supplier {supplier.name}",
+                metadata={"name": supplier.name},
+            )
 
     def perform_update(self, serializer):
-        serializer.save()
+        changed_fields = sorted(serializer.validated_data)
+        with transaction.atomic():
+            supplier = serializer.save()
+            log_activity_event(
+                organization=supplier.organization,
+                actor=self.request.user,
+                action="supplier.updated",
+                entity_type="Supplier",
+                entity_id=str(supplier.pk),
+                description=f"Updated supplier {supplier.name}",
+                metadata={"changed_fields": changed_fields},
+            )
 
     @action(detail=True, methods=["post"], url_path="deactivate")
     def deactivate(self, request, *args, **kwargs):
         instance = self.get_object()
-        instance.is_active = False
-        instance.save(update_fields=["is_active", "updated_at"])
+        if instance.is_active:
+            with transaction.atomic():
+                instance.is_active = False
+                instance.save(update_fields=["is_active", "updated_at"])
+                log_activity_event(
+                    organization=instance.organization,
+                    actor=request.user,
+                    action="supplier.deactivated",
+                    entity_type="Supplier",
+                    entity_id=str(instance.pk),
+                    description=f"Deactivated supplier {instance.name}",
+                )
         return Response(self.get_serializer(instance).data, status=status.HTTP_200_OK)
 
 
@@ -136,7 +168,17 @@ class PurchaseViewSet(
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
-        purchase = serializer.save()
+        with transaction.atomic():
+            purchase = serializer.save()
+            log_activity_event(
+                organization=request.organization,
+                actor=request.user,
+                action="purchase.created",
+                entity_type="Purchase",
+                entity_id=str(purchase.pk),
+                description=f"Created purchase {purchase.reference_number or purchase.pk}",
+                metadata={"reference_number": purchase.reference_number, "total": str(purchase.total)},
+            )
         response_serializer = PurchaseSerializer(purchase, context={"request": request})
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
 
@@ -145,7 +187,18 @@ class PurchaseViewSet(
         instance = self.get_object()
         serializer = self.get_serializer(instance, data=request.data, partial=partial, context={"request": request})
         serializer.is_valid(raise_exception=True)
-        purchase = serializer.save()
+        changed_fields = sorted(key for key in request.data if key in serializer.fields)
+        with transaction.atomic():
+            purchase = serializer.save()
+            log_activity_event(
+                organization=purchase.organization,
+                actor=request.user,
+                action="purchase.updated",
+                entity_type="Purchase",
+                entity_id=str(purchase.pk),
+                description=f"Updated purchase {purchase.reference_number or purchase.pk}",
+                metadata={"changed_fields": changed_fields},
+            )
         response_serializer = PurchaseSerializer(purchase, context={"request": request})
         return Response(response_serializer.data)
 
@@ -166,7 +219,11 @@ class PurchaseViewSet(
     @action(detail=True, methods=["post"], url_path="cancel")
     def cancel(self, request, *args, **kwargs):
         purchase = self.get_object()
-        purchase = cancel_purchase(organization=request.organization, purchase_id=str(purchase.pk))
+        purchase = cancel_purchase(
+            organization=request.organization,
+            purchase_id=str(purchase.pk),
+            actor=request.user,
+        )
         return Response(PurchaseSerializer(purchase, context={"request": request}).data, status=status.HTTP_200_OK)
 
     def destroy(self, request, *args, **kwargs):
