@@ -340,6 +340,11 @@ STAFF_INVITATION_EXPIRY_HOURS = env.int(
     default=48,
 )
 
+PASSWORD_RESET_EXPIRY_HOURS = env.int(
+    "PASSWORD_RESET_EXPIRY_HOURS",
+    default=2,
+)
+
 
 # ---------------------------------------------------------------------------
 # Internationalization

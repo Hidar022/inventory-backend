@@ -71,10 +71,10 @@ class SupplierViewSet(
     list=extend_schema(
         description="List purchases in the active organization. All active members can read; only owners and managers can create or modify draft purchases.",
         parameters=[
-            OpenApiParameter("search", str, OpenApiParameter.QUERY),
-            OpenApiParameter("status", str, OpenApiParameter.QUERY),
-            OpenApiParameter("supplier", str, OpenApiParameter.QUERY),
-            OpenApiParameter("page", int, OpenApiParameter.QUERY),
+            OpenApiParameter("search", OpenApiTypes.STR, OpenApiParameter.QUERY),
+            OpenApiParameter("status", OpenApiTypes.STR, OpenApiParameter.QUERY),
+            OpenApiParameter("supplier", OpenApiTypes.STR, OpenApiParameter.QUERY),
+            OpenApiParameter("page", OpenApiTypes.INT, OpenApiParameter.QUERY),
         ],
     ),
     create=extend_schema(description="Owner and Manager only. Create a draft purchase for the active organization."),

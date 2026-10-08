@@ -5,6 +5,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import PermissionDenied
@@ -66,17 +67,28 @@ class TeamMemberListCreateView(OrganizationContextMixin, generics.ListCreateAPIV
 
 class InvitationValidationView(OrganizationContextMixin, generics.GenericAPIView):
     permission_classes = [permissions.AllowAny]
+    serializer_class = InvitationValidationSerializer
 
     @extend_schema(
         parameters=[
             OpenApiParameter(
                 "token",
-                str,
+                OpenApiTypes.STR,
                 OpenApiParameter.QUERY,
                 description="Invitation token to validate.",
             )
         ],
-        responses={200: {"type": "object", "properties": {"valid": bool, "email": str, "role": str, "expires_at": str}}},
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "valid": {"type": "boolean"},
+                    "email": {"type": "string"},
+                    "role": {"type": "string"},
+                    "expires_at": {"type": "string", "format": "date-time"},
+                },
+            }
+        },
     )
     def get(self, request, *args, **kwargs):
         token = request.query_params.get("token")
@@ -100,6 +112,7 @@ class InvitationValidationView(OrganizationContextMixin, generics.GenericAPIView
 
 class InvitationAcceptView(OrganizationContextMixin, generics.GenericAPIView):
     permission_classes = [permissions.AllowAny]
+    serializer_class = InvitationAcceptSerializer
 
     def post(self, request, *args, **kwargs):
         serializer = InvitationAcceptSerializer(data=request.data)
@@ -110,6 +123,7 @@ class InvitationAcceptView(OrganizationContextMixin, generics.GenericAPIView):
 
 class TeamInvitationResendView(OrganizationContextMixin, generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated, IsOwner]
+    serializer_class = TeamMemberSerializer
 
     def post(self, request, *args, **kwargs):
         user = get_object_or_404(User, pk=kwargs["pk"])
@@ -172,6 +186,7 @@ class TeamInvitationResendView(OrganizationContextMixin, generics.GenericAPIView
 
 class TeamInvitationRevokeView(OrganizationContextMixin, generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated, IsOwner]
+    serializer_class = TeamMemberSerializer
 
     def post(self, request, *args, **kwargs):
         user = get_object_or_404(User, pk=kwargs["pk"])
@@ -196,6 +211,7 @@ class TeamInvitationRevokeView(OrganizationContextMixin, generics.GenericAPIView
 
 class TeamActivationView(OrganizationContextMixin, generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated, IsOwner]
+    serializer_class = TeamMemberSerializer
 
     def post(self, request, *args, **kwargs):
         user = get_object_or_404(User, pk=kwargs["pk"])
@@ -217,6 +233,7 @@ class TeamActivationView(OrganizationContextMixin, generics.GenericAPIView):
 
 class TeamDeactivationView(OrganizationContextMixin, generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated, IsOwner]
+    serializer_class = TeamMemberSerializer
 
     def post(self, request, *args, **kwargs):
         user = get_object_or_404(User, pk=kwargs["pk"])

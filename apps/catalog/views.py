@@ -129,9 +129,9 @@ class CatalogViewSet(
 			"All active organization members may read; Owner and Manager may mutate."
 		),
 		parameters=[
-			OpenApiParameter("search", str, OpenApiParameter.QUERY),
-			OpenApiParameter("is_active", bool, OpenApiParameter.QUERY),
-			OpenApiParameter("page", int, OpenApiParameter.QUERY),
+			OpenApiParameter("search", OpenApiTypes.STR, OpenApiParameter.QUERY),
+			OpenApiParameter("is_active", OpenApiTypes.BOOL, OpenApiParameter.QUERY),
+			OpenApiParameter("page", OpenApiTypes.INT, OpenApiParameter.QUERY),
 		],
 	),
 	create=extend_schema(
@@ -162,10 +162,10 @@ class CategoryViewSet(CatalogViewSet):
 			"read; Owner and Manager may mutate."
 		),
 		parameters=[
-			OpenApiParameter("search", str, OpenApiParameter.QUERY),
-			OpenApiParameter("category", int, OpenApiParameter.QUERY),
-			OpenApiParameter("is_active", bool, OpenApiParameter.QUERY),
-			OpenApiParameter("page", int, OpenApiParameter.QUERY),
+			OpenApiParameter("search", OpenApiTypes.STR, OpenApiParameter.QUERY),
+			OpenApiParameter("category", OpenApiTypes.INT, OpenApiParameter.QUERY),
+			OpenApiParameter("is_active", OpenApiTypes.BOOL, OpenApiParameter.QUERY),
+			OpenApiParameter("page", OpenApiTypes.INT, OpenApiParameter.QUERY),
 		],
 	),
 	create=extend_schema(

@@ -88,11 +88,11 @@ class InventoryListView(OrganizationContextMixin, generics.ListAPIView):
 
 	@extend_schema(
 		parameters=[
-			OpenApiParameter("search", str, OpenApiParameter.QUERY),
-			OpenApiParameter("category", int, OpenApiParameter.QUERY),
-			OpenApiParameter("low_stock", bool, OpenApiParameter.QUERY),
-			OpenApiParameter("active", bool, OpenApiParameter.QUERY),
-			OpenApiParameter("page", int, OpenApiParameter.QUERY),
+			OpenApiParameter("search", OpenApiTypes.STR, OpenApiParameter.QUERY),
+			OpenApiParameter("category", OpenApiTypes.INT, OpenApiParameter.QUERY),
+			OpenApiParameter("low_stock", OpenApiTypes.BOOL, OpenApiParameter.QUERY),
+			OpenApiParameter("active", OpenApiTypes.BOOL, OpenApiParameter.QUERY),
+			OpenApiParameter("page", OpenApiTypes.INT, OpenApiParameter.QUERY),
 		],
 		responses={200: InventoryProductSerializer(many=True)},
 		description="Paginated current stock for the active organization. Read access for all active members.",
@@ -217,13 +217,13 @@ class StockMovementListView(OrganizationContextMixin, generics.ListAPIView):
 
 	@extend_schema(
 		parameters=[
-			OpenApiParameter("product", int, OpenApiParameter.QUERY),
-			OpenApiParameter("movement_type", str, OpenApiParameter.QUERY),
-			OpenApiParameter("created_by", int, OpenApiParameter.QUERY),
-			OpenApiParameter("from", str, OpenApiParameter.QUERY),
-			OpenApiParameter("to", str, OpenApiParameter.QUERY),
-			OpenApiParameter("search", str, OpenApiParameter.QUERY),
-			OpenApiParameter("page", int, OpenApiParameter.QUERY),
+			OpenApiParameter("product", OpenApiTypes.INT, OpenApiParameter.QUERY),
+			OpenApiParameter("movement_type", OpenApiTypes.STR, OpenApiParameter.QUERY),
+			OpenApiParameter("created_by", OpenApiTypes.INT, OpenApiParameter.QUERY),
+			OpenApiParameter("from", OpenApiTypes.STR, OpenApiParameter.QUERY),
+			OpenApiParameter("to", OpenApiTypes.STR, OpenApiParameter.QUERY),
+			OpenApiParameter("search", OpenApiTypes.STR, OpenApiParameter.QUERY),
+			OpenApiParameter("page", OpenApiTypes.INT, OpenApiParameter.QUERY),
 		],
 		responses={200: StockMovementSerializer(many=True)},
 		description="Paginated immutable movement history for the active organization; readable by all active members.",

@@ -79,6 +79,87 @@ class RegistrationAPITests(TestCase):
         self.assertNotIn("password", response.data)
 
 
+class PasswordResetAPITests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(email="owner@example.com", password=STRONG_PASSWORD)
+
+    def test_reset_request_returns_generic_response_for_unknown_email(self):
+        response = self.client.post(
+            "/api/v1/auth/password/reset/request/",
+            {"email": "missing@example.com"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.data["detail"],
+            "If an account exists for this email, we've sent a password reset link.",
+        )
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_reset_request_sends_email_for_existing_user(self):
+        response = self.client.post(
+            "/api/v1/auth/password/reset/request/",
+            {"email": "owner@example.com"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.data["detail"],
+            "If an account exists for this email, we've sent a password reset link.",
+        )
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("Reset your password", mail.outbox[0].subject)
+        self.assertIn("/reset-password/", mail.outbox[0].body)
+        self.assertNotIn(STRONG_PASSWORD, mail.outbox[0].body)
+
+    def test_reset_token_allows_one_time_password_change(self):
+        self.client.post(
+            "/api/v1/auth/password/reset/request/",
+            {"email": "owner@example.com"},
+            format="json",
+        )
+        token = self.extract_reset_token(mail.outbox[0].body)
+
+        response = self.client.post(
+            "/api/v1/auth/password/reset/confirm/",
+            {"token": token, "password": "NewStrongPass456!"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("NewStrongPass456!"))
+
+        replay = self.client.post(
+            "/api/v1/auth/password/reset/confirm/",
+            {"token": token, "password": "AnotherStrongPass789!"},
+            format="json",
+        )
+
+        self.assertEqual(replay.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("token", replay.data)
+
+    def test_invalid_token_is_rejected(self):
+        response = self.client.post(
+            "/api/v1/auth/password/reset/confirm/",
+            {"token": "bad-token", "password": "NewStrongPass456!"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("token", response.data)
+
+    @staticmethod
+    def extract_reset_token(email_body):
+        marker = "/reset-password/"
+        start = email_body.index(marker)
+        token = email_body[start + len(marker) :].split()[0].strip()
+        return token
+
+
 class AuthenticationAPITests(TestCase):
     def setUp(self):
         self.client = APIClient()
