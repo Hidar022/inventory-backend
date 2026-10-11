@@ -1,6 +1,12 @@
+from io import BytesIO
+
 from django.contrib.auth import get_user_model
 from django.core import mail
+from django.core.files.storage import default_storage
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
+from django.test.utils import override_settings
+from PIL import Image
 from rest_framework import status
 from rest_framework.test import APIClient
 
@@ -11,6 +17,18 @@ User = get_user_model()
 STRONG_PASSWORD = "StrongPass123!"
 
 
+def make_logo(name="business-logo.png", image_format="PNG"):
+    buffer = BytesIO()
+    Image.new("RGB", (32, 32), color=(37, 99, 235)).save(buffer, format=image_format)
+    content_type = {
+        "PNG": "image/png",
+        "JPEG": "image/jpeg",
+        "WEBP": "image/webp",
+    }[image_format]
+    return SimpleUploadedFile(name, buffer.getvalue(), content_type=content_type)
+
+
+@override_settings(LOGO_STORAGE_IS_PERSISTENT=True)
 class OrganizationAPITests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -29,16 +47,50 @@ class OrganizationAPITests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(Organization.objects.count(), 1)
+        self.assertIsNone(response.data["logo"])
         org = Organization.objects.get(name="My Business")
         self.assertEqual(org.business_type, "Retail")
         self.assertEqual(org.currency, "NGN")
         self.assertTrue(org.memberships.filter(user=self.owner_user, role=Membership.Role.OWNER, is_active=True).exists())
+        duplicate_response = self.client.post(
+            "/api/v1/organizations/",
+            {
+                "name": "My Business",
+                "business_type": "Retail",
+                "currency": "NGN",
+                "logo": make_logo(),
+            },
+            format="multipart",
+        )
+        self.assertEqual(duplicate_response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Organization.objects.count(), 1)
         self.assertTrue(ActivityEvent.objects.filter(
             organization=org,
             actor=self.owner_user,
             action="organization.created",
             entity_id=str(org.pk),
         ).exists())
+
+    def test_authenticated_user_can_create_organization_with_logo(self):
+        self.client.force_authenticate(user=self.owner_user)
+
+        response = self.client.post(
+            "/api/v1/organizations/",
+            {
+                "name": "Logo Business",
+                "business_type": "Retail",
+                "currency": "NGN",
+                "logo": make_logo(),
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Organization.objects.count(), 1)
+        organization = Organization.objects.get()
+        self.assertTrue(organization.logo.name.startswith(f"organization-logos/{organization.pk}/"))
+        self.assertTrue(response.data["logo"].startswith("http://testserver/media/"))
+        self.assertTrue(organization.memberships.filter(user=self.owner_user).exists())
 
     def test_current_organization_can_be_retrieved(self):
         org = Organization.objects.create(name="My Business", slug="my-business")
@@ -71,6 +123,133 @@ class OrganizationAPITests(TestCase):
             action="organization.updated",
             entity_id=str(org.pk),
         ).exists())
+
+    def test_owner_can_replace_and_remove_current_organization_logo(self):
+        org = Organization.objects.create(name="My Business", slug="my-business")
+        Membership.objects.create(user=self.owner_user, organization=org, role=Membership.Role.OWNER, is_active=True)
+        org.logo.save("initial.png", make_logo(), save=True)
+        original_name = org.logo.name
+
+        self.client.force_authenticate(user=self.owner_user)
+        with self.captureOnCommitCallbacks(execute=True):
+            replacement_response = self.client.patch(
+                "/api/v1/organizations/current/",
+                {"logo": make_logo("replacement.png")},
+                format="multipart",
+            )
+
+        self.assertEqual(replacement_response.status_code, status.HTTP_200_OK)
+        org.refresh_from_db()
+        replacement_name = org.logo.name
+        self.assertNotEqual(replacement_name, original_name)
+        self.assertFalse(default_storage.exists(original_name))
+        self.assertTrue(replacement_response.data["logo"].startswith("http://testserver/"))
+
+        with self.captureOnCommitCallbacks(execute=True):
+            removal_response = self.client.patch(
+                "/api/v1/organizations/current/",
+                {"remove_logo": "true"},
+                format="multipart",
+            )
+
+        self.assertEqual(removal_response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(removal_response.data["logo"])
+        org.refresh_from_db()
+        self.assertFalse(org.logo)
+        self.assertFalse(default_storage.exists(replacement_name))
+
+    def test_logo_update_uses_membership_not_client_organization_id(self):
+        own_org = Organization.objects.create(name="My Business", slug="my-business")
+        other_org = Organization.objects.create(name="Other Business", slug="other-business")
+        Membership.objects.create(user=self.owner_user, organization=own_org, role=Membership.Role.OWNER, is_active=True)
+        other_logo = make_logo("other.png")
+        other_org.logo.save(other_logo.name, other_logo, save=True)
+        other_logo_name = other_org.logo.name
+
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.patch(
+            "/api/v1/organizations/current/",
+            {"organization_id": str(other_org.pk), "logo": make_logo()},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        own_org.refresh_from_db()
+        other_org.refresh_from_db()
+        self.assertTrue(own_org.logo)
+        self.assertEqual(other_org.logo.name, other_logo_name)
+
+    def test_manager_cannot_change_current_organization_logo(self):
+        org = Organization.objects.create(name="My Business", slug="my-business")
+        Membership.objects.create(user=self.manager_user, organization=org, role=Membership.Role.MANAGER, is_active=True)
+
+        self.client.force_authenticate(user=self.manager_user)
+        response = self.client.patch(
+            "/api/v1/organizations/current/",
+            {"logo": make_logo()},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        org.refresh_from_db()
+        self.assertFalse(org.logo)
+
+    def test_invalid_and_oversized_logo_uploads_are_rejected(self):
+        self.client.force_authenticate(user=self.owner_user)
+        invalid_response = self.client.post(
+            "/api/v1/organizations/",
+            {
+                "name": "Invalid Logo Business",
+                "business_type": "Retail",
+                "currency": "NGN",
+                "logo": SimpleUploadedFile(
+                    "not-an-image.png", b"not an image", content_type="image/png"
+                ),
+            },
+            format="multipart",
+        )
+        self.assertEqual(invalid_response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Organization.objects.count(), 0)
+        self.assertIn("logo", invalid_response.data)
+
+        logo = make_logo()
+        oversized = SimpleUploadedFile(
+            "large.png",
+            logo.read() + b"x" * (2 * 1024 * 1024),
+            content_type="image/png",
+        )
+        oversized_response = self.client.post(
+            "/api/v1/organizations/",
+            {
+                "name": "Large Logo Business",
+                "business_type": "Retail",
+                "currency": "NGN",
+                "logo": oversized,
+            },
+            format="multipart",
+        )
+        self.assertEqual(oversized_response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Organization.objects.count(), 0)
+        self.assertIn("2 MB or smaller", str(oversized_response.data["logo"]))
+
+    @override_settings(DEBUG=False, LOGO_STORAGE_IS_PERSISTENT=False)
+    def test_logo_upload_is_disabled_without_production_persistent_storage(self):
+        self.client.force_authenticate(user=self.owner_user)
+
+        response = self.client.post(
+            "/api/v1/organizations/",
+            {
+                "name": "No Persistent Storage",
+                "business_type": "Retail",
+                "currency": "NGN",
+                "logo": make_logo(),
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Organization.objects.count(), 0)
+        self.assertIn("persistent media storage", str(response.data["logo"]))
 
     def test_manager_cannot_update_current_organization(self):
         org = Organization.objects.create(name="My Business", slug="my-business")

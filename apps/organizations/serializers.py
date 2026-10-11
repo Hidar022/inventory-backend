@@ -12,6 +12,7 @@ from rest_framework import serializers
 
 from apps.dashboard.services import log_activity_event
 from apps.organizations.models import Membership, Organization, StaffInvitation
+from apps.organizations.validators import validate_organization_logo
 from common.email import send_product_email
 
 User = get_user_model()
@@ -24,6 +25,13 @@ class OrganizationSummarySerializer(serializers.ModelSerializer):
 
 
 class OrganizationSerializer(serializers.ModelSerializer):
+    logo = serializers.ImageField(
+        required=False,
+        allow_null=True,
+        validators=[validate_organization_logo],
+    )
+    remove_logo = serializers.BooleanField(required=False, write_only=True)
+
     class Meta:
         model = Organization
         fields = [
@@ -31,6 +39,8 @@ class OrganizationSerializer(serializers.ModelSerializer):
             "name",
             "slug",
             "business_type",
+            "logo",
+            "remove_logo",
             "currency",
             "timezone",
             "is_active",
@@ -38,6 +48,18 @@ class OrganizationSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["id", "slug", "is_active", "created_at", "updated_at"]
+
+    def validate(self, attrs):
+        if attrs.get("remove_logo") and attrs.get("logo"):
+            raise serializers.ValidationError(
+                {"logo": "Choose a logo to upload or remove the current logo, not both."}
+            )
+        return attrs
+
+    def update(self, instance, validated_data):
+        if validated_data.pop("remove_logo", False):
+            validated_data["logo"] = None
+        return super().update(instance, validated_data)
 
 
 class TeamMemberSerializer(serializers.ModelSerializer):
@@ -83,12 +105,17 @@ class TeamMemberSerializer(serializers.ModelSerializer):
 
 
 class OrganizationCreateSerializer(serializers.ModelSerializer):
+    logo = serializers.ImageField(
+        required=False,
+        allow_null=True,
+        validators=[validate_organization_logo],
+    )
     business_type = serializers.CharField(required=False, allow_blank=True, max_length=100)
     currency = serializers.CharField(required=True, min_length=3, max_length=3)
 
     class Meta:
         model = Organization
-        fields = ["name", "business_type", "currency"]
+        fields = ["name", "business_type", "currency", "logo"]
 
     def validate_name(self, value):
         cleaned = value.strip()
@@ -114,10 +141,17 @@ class OrganizationCreateSerializer(serializers.ModelSerializer):
             counter += 1
 
         with transaction.atomic():
+            user = User.objects.select_for_update().get(pk=user.pk)
+            if Membership.objects.filter(user=user, is_active=True).exists():
+                raise serializers.ValidationError(
+                    {"detail": "You already belong to an active business."}
+                )
+
             organization = Organization.objects.create(
                 name=base_name,
                 slug=slug,
                 business_type=validated_data.get("business_type", "").strip(),
+                logo=validated_data.get("logo"),
                 currency=validated_data.get("currency", "NGN").upper(),
                 timezone="Africa/Lagos",
             )

@@ -3,6 +3,8 @@ from datetime import timedelta
 from pathlib import Path
 
 import environ
+from django.conf import global_settings
+from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -365,8 +367,47 @@ USE_TZ = True
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
-MEDIA_URL = "media/"
+MEDIA_URL = env("MEDIA_URL", default="/media/")
 MEDIA_ROOT = BASE_DIR / "media"
+
+MEDIA_STORAGE_BACKEND = env("MEDIA_STORAGE_BACKEND", default="filesystem").lower()
+LOGO_STORAGE_IS_PERSISTENT = MEDIA_STORAGE_BACKEND == "s3"
+
+if MEDIA_STORAGE_BACKEND == "s3":
+    bucket_name = env("AWS_STORAGE_BUCKET_NAME", default="")
+    access_key = env("AWS_ACCESS_KEY_ID", default="")
+    secret_key = env("AWS_SECRET_ACCESS_KEY", default="")
+    if not bucket_name:
+        raise ImproperlyConfigured("AWS_STORAGE_BUCKET_NAME is required for S3 media storage.")
+    if bool(access_key) != bool(secret_key):
+        raise ImproperlyConfigured("Set both S3 access key variables, or neither when using workload identity.")
+
+    s3_options = {
+        "bucket_name": bucket_name,
+        "region_name": env("AWS_S3_REGION_NAME", default="us-east-1"),
+        "endpoint_url": env("AWS_S3_ENDPOINT_URL", default="") or None,
+        "custom_domain": env("AWS_S3_CUSTOM_DOMAIN", default="") or None,
+        "access_key": access_key or None,
+        "secret_key": secret_key or None,
+        "querystring_auth": False,
+        "default_acl": None,
+        "file_overwrite": False,
+        "object_parameters": {"CacheControl": "public, max-age=31536000, immutable"},
+    }
+    STORAGES = {
+        **global_settings.STORAGES,
+        "default": {
+            "BACKEND": "storages.backends.s3.S3Storage",
+            "OPTIONS": s3_options,
+        },
+    }
+elif MEDIA_STORAGE_BACKEND == "filesystem":
+    STORAGES = {
+        **global_settings.STORAGES,
+        "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    }
+else:
+    raise ImproperlyConfigured("MEDIA_STORAGE_BACKEND must be 'filesystem' or 's3'.")
 
 
 # ---------------------------------------------------------------------------

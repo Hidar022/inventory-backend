@@ -6,6 +6,13 @@ from django.db import models
 from django.db.models import Q
 from django.utils import timezone
 
+from apps.organizations.validators import validate_organization_logo
+
+
+def organization_logo_upload_to(instance, filename):
+    extension = filename.rsplit(".", 1)[-1].lower()
+    return f"organization-logos/{instance.pk}/{uuid.uuid4().hex}.{extension}"
+
 
 class Organization(models.Model):
     id = models.UUIDField(
@@ -16,6 +23,12 @@ class Organization(models.Model):
     name = models.CharField(max_length=200)
     slug = models.SlugField(max_length=220, unique=True)
     business_type = models.CharField(max_length=100, blank=True)
+    logo = models.ImageField(
+        upload_to=organization_logo_upload_to,
+        blank=True,
+        null=True,
+        validators=[validate_organization_logo],
+    )
     currency = models.CharField(max_length=3, default="NGN")
     timezone = models.CharField(max_length=64, default="Africa/Lagos")
     is_active = models.BooleanField(default=True)

@@ -1,4 +1,6 @@
 from django.contrib import admin
+from django.conf import settings
+from django.conf.urls.static import static
 from django.urls import include, path
 from drf_spectacular.views import (
     SpectacularAPIView,
@@ -22,3 +24,6 @@ urlpatterns = [
         name="api-docs",
     ),
 ]
+
+if settings.DEBUG and settings.MEDIA_STORAGE_BACKEND == "filesystem":
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

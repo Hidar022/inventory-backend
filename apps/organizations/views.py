@@ -325,8 +325,13 @@ class CurrentOrganizationView(OrganizationContextMixin, generics.RetrieveUpdateA
 
     def perform_update(self, serializer):
         changed_fields = sorted(serializer.validated_data)
+        previous_logo = serializer.instance.logo
         with transaction.atomic():
             organization = serializer.save()
+            if previous_logo and previous_logo.name != organization.logo.name:
+                storage = previous_logo.storage
+                previous_logo_name = previous_logo.name
+                transaction.on_commit(lambda: storage.delete(previous_logo_name))
             log_activity_event(
                 organization=organization,
                 actor=self.request.user,

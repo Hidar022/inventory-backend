@@ -10,6 +10,8 @@ gunicorn==26.2.0
 inflection==0.5.1
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
+django-storages[s3]>=1.14.6,<2.0
+Pillow>=11.0,<13.0
 psycopg==3.3.6
 psycopg-binary==3.3.6
 PyJWT==2.15.1
