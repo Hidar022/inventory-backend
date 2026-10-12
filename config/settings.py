@@ -34,6 +34,8 @@ ALLOWED_HOSTS = env.list(
     "DJANGO_ALLOWED_HOSTS",
     default=["localhost", "127.0.0.1"],
 )
+if any(arg.startswith("test") for arg in sys.argv):
+    ALLOWED_HOSTS = list(dict.fromkeys([*ALLOWED_HOSTS, "testserver"]))
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +63,7 @@ INSTALLED_APPS = [
     "apps.purchases.apps.PurchasesConfig",
     "apps.expenses.apps.ExpensesConfig",
     "apps.dashboard.apps.DashboardConfig",
+    "apps.billing.apps.BillingConfig",
 ]
 
 
@@ -221,7 +224,7 @@ SPECTACULAR_SETTINGS = {
 
 CORS_ALLOWED_ORIGINS = env.list(
     "CORS_ALLOWED_ORIGINS",
-    default=["http://localhost:5173"],
+    default=["http://localhost:5173", "http://localhost:5174"],
 )
 
 CSRF_TRUSTED_ORIGINS = env.list(
@@ -342,10 +345,29 @@ STAFF_INVITATION_EXPIRY_HOURS = env.int(
     default=48,
 )
 
+PAYSTACK_SECRET_KEY = env("PAYSTACK_SECRET_KEY", default="")
+PAYSTACK_PUBLIC_KEY = env("PAYSTACK_PUBLIC_KEY", default="")
+PAYSTACK_BASE_URL = env("PAYSTACK_BASE_URL", default="https://api.paystack.co")
+PAYSTACK_USER_AGENT = env(
+    "PAYSTACK_USER_AGENT",
+    default=(
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/51.0.2704.103 Safari/537.36"
+    ),
+)
+PAYSTACK_CALLBACK_URL = env(
+    "PAYSTACK_CALLBACK_URL",
+    default="http://localhost:5174/billing/callback",
+)
+
 PASSWORD_RESET_EXPIRY_HOURS = env.int(
     "PASSWORD_RESET_EXPIRY_HOURS",
     default=2,
 )
+
+if DEBUG and not PAYSTACK_SECRET_KEY:
+    PAYSTACK_SECRET_KEY = "test_secret_key"
+    PAYSTACK_PUBLIC_KEY = "pk_test_xxx"
 
 
 # ---------------------------------------------------------------------------

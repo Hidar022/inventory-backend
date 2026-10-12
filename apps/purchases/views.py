@@ -11,6 +11,7 @@ from rest_framework.viewsets import GenericViewSet, mixins
 from apps.catalog.models import Product
 from apps.dashboard.services import log_activity_event
 from apps.organizations.permissions import (
+    HasActiveSubscription,
     IsOrganizationMember,
     IsOwnerOrManager,
     OrganizationContextMixin,

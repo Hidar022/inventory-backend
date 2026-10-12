@@ -1,5 +1,7 @@
+from django.utils import timezone
 from rest_framework.permissions import BasePermission
 
+from apps.billing.models import OrganizationSubscription
 from apps.organizations.models import Membership
 
 
@@ -58,3 +60,21 @@ class IsOwnerOrManager(BasePermission):
             and membership.is_active
             and membership.role in {Membership.Role.OWNER, Membership.Role.MANAGER},
         )
+
+
+class HasActiveSubscription(BasePermission):
+    message = "Your organization subscription is inactive or expired. Please renew to continue."
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        organization = getattr(request, "organization", None)
+        if not organization:
+            return False
+
+        latest = organization.subscriptions.order_by("-start_date", "-created_at").first()
+        if latest is None:
+            return False
+        if latest.expiry_date <= timezone.now():
+            return False
+        return latest.status == OrganizationSubscription.Status.ACTIVE

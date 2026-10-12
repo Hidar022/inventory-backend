@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.organizations.permissions import (
+    HasActiveSubscription,
     IsOrganizationMember,
     IsOwnerOrManager,
     OrganizationContextMixin,
@@ -26,7 +27,7 @@ from apps.sales.services import checkout_sale
 
 
 class CheckoutView(OrganizationContextMixin, APIView):
-    permission_classes = [permissions.IsAuthenticated, IsOrganizationMember]
+    permission_classes = [permissions.IsAuthenticated, IsOrganizationMember, HasActiveSubscription]
 
     @extend_schema(
         request=CheckoutSerializer,
@@ -124,7 +125,7 @@ class SaleReturnListView(OrganizationContextMixin, generics.ListAPIView):
     def get_permissions(self):
         permissions_list = [permissions.IsAuthenticated, IsOrganizationMember]
         if self.request.method == "POST":
-            permissions_list.append(IsOwnerOrManager)
+            permissions_list.extend([HasActiveSubscription, IsOwnerOrManager])
         return [permission() for permission in permissions_list]
 
     def get_serializer_class(self):

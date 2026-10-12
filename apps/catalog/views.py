@@ -11,6 +11,7 @@ from apps.catalog.models import Category, Product
 from apps.catalog.serializers import CategorySerializer, ProductSerializer
 from apps.dashboard.services import log_activity_event
 from apps.organizations.permissions import (
+	HasActiveSubscription,
 	IsOrganizationMember,
 	IsOwnerOrManager,
 	OrganizationContextMixin,
@@ -76,7 +77,10 @@ class CatalogViewSet(
 	def get_permissions(self):
 		permissions_list = super().get_permissions()
 		if self.request.method not in permissions.SAFE_METHODS:
-			permissions_list.append(IsOwnerOrManager())
+			permissions_list.extend([
+				HasActiveSubscription(),
+				IsOwnerOrManager(),
+			])
 		return permissions_list
 
 	def get_queryset(self):

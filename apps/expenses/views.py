@@ -18,6 +18,7 @@ from apps.expenses.serializers import (
 )
 from apps.expenses.services import get_daily_cash_summary
 from apps.organizations.permissions import (
+    HasActiveSubscription,
     IsOrganizationMember,
     IsOwnerOrManager,
     OrganizationContextMixin,
@@ -45,7 +46,10 @@ class ExpenseCategoryViewSet(
     def get_permissions(self):
         permission_list = super().get_permissions()
         if self.request.method not in permissions.SAFE_METHODS:
-            permission_list.append(IsOwnerOrManager())
+            permission_list.extend([
+                HasActiveSubscription(),
+                IsOwnerOrManager(),
+            ])
         return permission_list
 
     def get_queryset(self):
@@ -125,7 +129,7 @@ class ExpenseViewSet(
     viewsets.GenericViewSet,
 ):
     serializer_class = ExpenseSerializer
-    permission_classes = [permissions.IsAuthenticated, IsOrganizationMember, IsOwnerOrManager]
+    permission_classes = [permissions.IsAuthenticated, IsOrganizationMember, HasActiveSubscription, IsOwnerOrManager]
 
     def get_queryset(self):
         organization = getattr(self.request, "organization", None)

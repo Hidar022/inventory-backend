@@ -18,6 +18,7 @@ from apps.inventory.serializers import (
 )
 from apps.inventory.services import create_stock_movement
 from apps.organizations.permissions import (
+	HasActiveSubscription,
 	IsOrganizationMember,
 	IsOwnerOrManager,
 	OrganizationContextMixin,
@@ -105,6 +106,7 @@ class StockMutationView(OrganizationContextMixin, APIView):
 	permission_classes = [
 		permissions.IsAuthenticated,
 		IsOrganizationMember,
+		HasActiveSubscription,
 		IsOwnerOrManager,
 	]
 	serializer_class = None

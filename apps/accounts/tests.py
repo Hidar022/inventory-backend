@@ -1,6 +1,7 @@
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.test import TestCase
+from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APIClient
 
@@ -248,3 +249,82 @@ class AuthenticationAPITests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIsNone(response.data["organization"])
         self.assertIsNone(response.data["role"])
+
+
+class UserAdminTests(TestCase):
+    def setUp(self):
+        self.admin_user = User.objects.create_superuser(
+            email="admin@example.com",
+            password=STRONG_PASSWORD,
+        )
+        self.client.force_login(self.admin_user)
+
+    def test_superuser_can_search_user_accounts(self):
+        User.objects.create_user(
+            email="managed@example.com",
+            password=STRONG_PASSWORD,
+            first_name="Managed",
+        )
+        User.objects.create_user(
+            email="another@example.com",
+            password=STRONG_PASSWORD,
+        )
+
+        response = self.client.get(
+            reverse("admin:accounts_user_changelist"),
+            {"q": "managed@example.com"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "managed@example.com")
+        self.assertNotContains(response, "another@example.com")
+
+    def test_superuser_can_filter_user_accounts_by_active_status(self):
+        User.objects.create_user(
+            email="active@example.com",
+            password=STRONG_PASSWORD,
+        )
+        User.objects.create_user(
+            email="inactive@example.com",
+            password=STRONG_PASSWORD,
+            is_active=False,
+        )
+
+        response = self.client.get(
+            reverse("admin:accounts_user_changelist"),
+            {"is_active__exact": "0"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "inactive@example.com")
+        self.assertNotContains(response, ">active@example.com</a>")
+
+    def test_superuser_can_create_email_authenticated_staff_user(self):
+        response = self.client.post(
+            reverse("admin:accounts_user_add"),
+            {
+                "email": "staff@example.com",
+                "first_name": "Store",
+                "last_name": "Staff",
+                "password1": STRONG_PASSWORD,
+                "password2": STRONG_PASSWORD,
+                "is_active": "on",
+                "is_staff": "on",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        staff_user = User.objects.get(email="staff@example.com")
+        self.assertEqual(staff_user.first_name, "Store")
+        self.assertTrue(staff_user.is_active)
+        self.assertTrue(staff_user.is_staff)
+        self.assertFalse(staff_user.is_superuser)
+        self.assertTrue(staff_user.check_password(STRONG_PASSWORD))
+
+        change_response = self.client.get(
+            reverse("admin:accounts_user_change", args=[staff_user.pk]),
+        )
+        self.assertEqual(change_response.status_code, 200)
+        self.assertContains(change_response, 'name="is_superuser"')
+        self.assertContains(change_response, 'name="groups"')
+        self.assertContains(change_response, 'name="user_permissions"')
