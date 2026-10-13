@@ -1,6 +1,9 @@
+from datetime import timedelta
+
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.test import TestCase
+from django.utils import timezone
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APIClient
@@ -241,6 +244,36 @@ class AuthenticationAPITests(TestCase):
         self.assertEqual(response.data["email"], "owner@example.com")
         self.assertIn("organization", response.data)
         self.assertIn("role", response.data)
+
+    def test_me_uses_the_same_current_membership_for_organization_and_role(self):
+        older_organization = Organization.objects.create(
+            name="Older Workspace",
+            slug="older-workspace",
+        )
+        newer_organization = Organization.objects.create(
+            name="Current Workspace",
+            slug="current-workspace",
+        )
+        older_membership = Membership.objects.create(
+            user=self.user,
+            organization=older_organization,
+            role=Membership.Role.OWNER,
+        )
+        Membership.objects.filter(pk=older_membership.pk).update(
+            created_at=timezone.now() - timedelta(days=1),
+        )
+        Membership.objects.create(
+            user=self.user,
+            organization=newer_organization,
+            role=Membership.Role.CASHIER,
+        )
+
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get("/api/v1/auth/me/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["organization"]["id"], str(newer_organization.pk))
+        self.assertEqual(response.data["role"], "cashier")
 
     def test_me_returns_no_organization_when_user_has_no_membership(self):
         self.client.force_authenticate(user=self.user)

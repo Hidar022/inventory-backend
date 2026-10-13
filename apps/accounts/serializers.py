@@ -80,17 +80,27 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = ["id", "email", "first_name", "last_name", "organization", "role"]
 
+    def get_membership(self, obj):
+        request = self.context.get("request")
+        current_membership = getattr(request, "membership", None)
+        if current_membership and current_membership.user_id == obj.pk:
+            return current_membership
+
+        return (
+            Membership.objects.select_related("organization")
+            .filter(user=obj, is_active=True)
+            .order_by("-created_at", "-pk")
+            .first()
+        )
+
     def get_organization(self, obj):
-        membership = Membership.objects.select_related("organization").filter(
-            user=obj,
-            is_active=True,
-        ).first()
+        membership = self.get_membership(obj)
         if not membership:
             return None
         return OrganizationSummarySerializer(membership.organization).data
 
     def get_role(self, obj):
-        membership = Membership.objects.filter(user=obj, is_active=True).first()
+        membership = self.get_membership(obj)
         if not membership:
             return None
         return membership.role.lower()

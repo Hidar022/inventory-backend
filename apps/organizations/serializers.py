@@ -142,9 +142,14 @@ class OrganizationCreateSerializer(serializers.ModelSerializer):
 
         with transaction.atomic():
             user = User.objects.select_for_update().get(pk=user.pk)
-            if Membership.objects.filter(user=user, is_active=True).exists():
+            if Membership.objects.filter(user=user).exists():
                 raise serializers.ValidationError(
-                    {"detail": "You already belong to an active business."}
+                    {
+                        "detail": (
+                            "This account already belongs or belonged to a business. "
+                            "Contact the organization owner for access."
+                        )
+                    }
                 )
 
             organization = Organization.objects.create(

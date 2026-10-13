@@ -152,9 +152,24 @@ class BillingVerifyView(OrganizationContextMixin, generics.GenericAPIView):
         metadata = payload.get("metadata") or {}
 
         if status_value != "success":
-            transaction.status = BillingTransaction.Status.FAILED
-            transaction.save(update_fields=["status", "updated_at"])
-            return Response({"reference": reference, "status": "failed"}, status=status.HTTP_200_OK)
+            if status_value in {"failed", "abandoned"}:
+                transaction.status = (
+                    BillingTransaction.Status.ABANDONED
+                    if status_value == "abandoned"
+                    else BillingTransaction.Status.FAILED
+                )
+                transaction.save(update_fields=["status", "updated_at"])
+                result_status = status_value
+            else:
+                transaction.last_verified_at = timezone.now()
+                transaction.save(
+                    update_fields=["last_verified_at", "updated_at"],
+                )
+                result_status = "pending"
+            return Response(
+                {"reference": reference, "status": result_status},
+                status=status.HTTP_200_OK,
+            )
 
         if reference_value != reference:
             raise ValidationError({"reference": "The payment reference does not match the pending transaction."})

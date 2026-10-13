@@ -88,6 +88,45 @@ class BillingTransactionSerializer(serializers.ModelSerializer):
 
 def build_subscription_summary(organization):
     subscription = get_latest_subscription(organization)
+    initial_transactions = BillingTransaction.objects.filter(
+        organization=organization,
+        kind=BillingTransaction.Kind.INITIAL_SETUP,
+    )
+    if (
+        OrganizationSubscription.objects.filter(
+            organization=organization,
+            is_setup=True,
+        ).exists()
+        or initial_transactions.filter(is_fulfilled=True).exists()
+    ):
+        initial_activation = {"status": "COMPLETED", "reference": None}
+    else:
+        pending_initial = initial_transactions.filter(
+            status__in=[BillingTransaction.Status.PENDING, BillingTransaction.Status.SUCCESS],
+            is_fulfilled=False,
+        ).order_by("-created_at").first()
+        if pending_initial:
+            initial_activation = {
+                "status": "PENDING",
+                "reference": pending_initial.reference,
+            }
+        else:
+            latest_initial = initial_transactions.order_by("-created_at").first()
+            initial_activation = {
+                "status": (
+                    "FAILED"
+                    if latest_initial
+                    and latest_initial.status
+                    in [
+                        BillingTransaction.Status.FAILED,
+                        BillingTransaction.Status.ABANDONED,
+                        BillingTransaction.Status.INVALID,
+                    ]
+                    else "NOT_STARTED"
+                ),
+                "reference": latest_initial.reference if latest_initial else None,
+            }
+
     if subscription is None:
         return {
             "status": "NO_SUBSCRIPTION",
@@ -99,6 +138,7 @@ def build_subscription_summary(organization):
             "is_active": False,
             "is_setup": False,
             "amount": Decimal("0.00"),
+            "initial_activation": initial_activation,
         }
     serializer = SubscriptionSummarySerializer(subscription)
-    return serializer.data
+    return {**serializer.data, "initial_activation": initial_activation}

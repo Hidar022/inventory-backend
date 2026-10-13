@@ -33,6 +33,70 @@ class BillingAPITests(TestCase):
         Membership.objects.create(user=self.manager, organization=self.organization, role=Membership.Role.MANAGER, is_active=True)
         Membership.objects.create(user=self.cashier, organization=self.organization, role=Membership.Role.CASHIER, is_active=True)
 
+    def test_summary_reports_authoritative_initial_activation_lifecycle(self):
+        initial_plan = SubscriptionPlan.objects.create(
+            code=SubscriptionPlan.Code.INITIAL_SETUP_6_MONTHS,
+            name="Initial setup + 6 months",
+            description="Initial activation",
+            months=6,
+            amount=Decimal("50000.00"),
+            currency="NGN",
+        )
+        renewal_plan = SubscriptionPlan.objects.create(
+            code=SubscriptionPlan.Code.MONTHLY,
+            name="Monthly",
+            description="Monthly access",
+            months=1,
+            amount=Decimal("10000.00"),
+            currency="NGN",
+        )
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.get("/api/v1/billing/summary/")
+        self.assertEqual(response.data["initial_activation"]["status"], "NOT_STARTED")
+
+        initial_payment = BillingTransaction.objects.create(
+            organization=self.organization,
+            plan=initial_plan,
+            reference="INV-LIFECYCLE-PENDING",
+            kind=BillingTransaction.Kind.INITIAL_SETUP,
+            amount=initial_plan.amount,
+            currency="NGN",
+            email=self.owner.email,
+        )
+        response = self.client.get("/api/v1/billing/summary/")
+        self.assertEqual(response.data["initial_activation"]["status"], "PENDING")
+        self.assertEqual(
+            response.data["initial_activation"]["reference"],
+            initial_payment.reference,
+        )
+
+        initial_payment.status = BillingTransaction.Status.FAILED
+        initial_payment.save(update_fields=["status", "updated_at"])
+        response = self.client.get("/api/v1/billing/summary/")
+        self.assertEqual(response.data["initial_activation"]["status"], "FAILED")
+
+        initial_payment.status = BillingTransaction.Status.SUCCESS
+        initial_payment.is_fulfilled = True
+        initial_payment.fulfilled_at = timezone.now()
+        initial_payment.save(
+            update_fields=["status", "is_fulfilled", "fulfilled_at", "updated_at"]
+        )
+        for index in range(10):
+            BillingTransaction.objects.create(
+                organization=self.organization,
+                plan=renewal_plan,
+                reference=f"INV-LIFECYCLE-RENEWAL-{index}",
+                kind=BillingTransaction.Kind.RENEWAL,
+                amount=renewal_plan.amount,
+                currency="NGN",
+                email=self.owner.email,
+            )
+
+        response = self.client.get("/api/v1/billing/summary/")
+        self.assertEqual(response.data["initial_activation"]["status"], "COMPLETED")
+        self.assertEqual(len(response.data["transactions"]), 10)
+
     def test_initial_setup_and_renewal_plans_are_available(self):
         self.client.force_authenticate(user=self.owner)
 
@@ -296,6 +360,47 @@ class BillingAPITests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["status"], "failed")
         self.assertEqual(payment.status, BillingTransaction.Status.FAILED)
+
+    def test_pending_paystack_verification_does_not_mark_payment_failed(self):
+        plan = SubscriptionPlan.objects.create(
+            code=SubscriptionPlan.Code.MONTHLY,
+            name="Monthly",
+            description="Monthly access",
+            months=1,
+            amount=Decimal("10000.00"),
+            currency="NGN",
+            sort_order=1,
+        )
+        payment = BillingTransaction.objects.create(
+            organization=self.organization,
+            plan=plan,
+            reference="INV-PENDING-VERIFY",
+            kind=BillingTransaction.Kind.RENEWAL,
+            amount=plan.amount,
+            currency="NGN",
+            email=self.owner.email,
+        )
+        self.client.force_authenticate(user=self.owner)
+
+        with patch(
+            "apps.billing.views.PaystackClient.verify_transaction",
+            return_value={"data": {"status": "pending"}},
+        ):
+            response = self.client.post(
+                "/api/v1/billing/verify/",
+                {"reference": payment.reference},
+                format="json",
+            )
+
+        payment.refresh_from_db()
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], "pending")
+        self.assertEqual(payment.status, BillingTransaction.Status.PENDING)
+        self.assertFalse(payment.is_fulfilled)
+        self.assertEqual(
+            OrganizationSubscription.objects.filter(organization=self.organization).count(),
+            0,
+        )
 
     def test_repeated_successful_verification_fulfills_payment_once(self):
         plan = SubscriptionPlan.objects.create(

@@ -92,6 +92,68 @@ class OrganizationAPITests(TestCase):
         self.assertTrue(response.data["logo"].startswith("http://testserver/media/"))
         self.assertTrue(organization.memberships.filter(user=self.owner_user).exists())
 
+    def test_manager_and_cashier_cannot_create_an_additional_business(self):
+        manager_organization = Organization.objects.create(
+            name="Manager Workspace",
+            slug="manager-workspace",
+        )
+        cashier_organization = Organization.objects.create(
+            name="Cashier Workspace",
+            slug="cashier-workspace",
+        )
+        Membership.objects.create(
+            user=self.manager_user,
+            organization=manager_organization,
+            role=Membership.Role.MANAGER,
+            is_active=True,
+        )
+        Membership.objects.create(
+            user=self.cashier_user,
+            organization=cashier_organization,
+            role=Membership.Role.CASHIER,
+            is_active=True,
+        )
+
+        for user, name in (
+            (self.manager_user, "Manager New Business"),
+            (self.cashier_user, "Cashier New Business"),
+        ):
+            self.client.force_authenticate(user=user)
+            response = self.client.post(
+                "/api/v1/organizations/",
+                {"name": name, "business_type": "Retail", "currency": "NGN"},
+                format="json",
+            )
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        self.assertEqual(Organization.objects.count(), 2)
+
+    def test_inactive_staff_membership_cannot_be_used_to_create_a_business(self):
+        organization = Organization.objects.create(
+            name="Historical Workspace",
+            slug="historical-workspace",
+        )
+        Membership.objects.create(
+            user=self.manager_user,
+            organization=organization,
+            role=Membership.Role.MANAGER,
+            is_active=False,
+        )
+
+        self.client.force_authenticate(user=self.manager_user)
+        response = self.client.post(
+            "/api/v1/organizations/",
+            {
+                "name": "Unauthorized New Business",
+                "business_type": "Retail",
+                "currency": "NGN",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Organization.objects.count(), 1)
+
     def test_current_organization_can_be_retrieved(self):
         org = Organization.objects.create(name="My Business", slug="my-business")
         Membership.objects.create(user=self.owner_user, organization=org, role=Membership.Role.OWNER, is_active=True)
