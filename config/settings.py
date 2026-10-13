@@ -64,6 +64,7 @@ INSTALLED_APPS = [
     "apps.expenses.apps.ExpensesConfig",
     "apps.dashboard.apps.DashboardConfig",
     "apps.billing.apps.BillingConfig",
+    "apps.platform_admin.apps.PlatformAdminConfig",
 ]
 
 

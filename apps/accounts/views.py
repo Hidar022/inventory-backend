@@ -5,6 +5,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from apps.accounts.serializers import (
     EmailTokenObtainPairSerializer,
+    ActiveUserTokenRefreshSerializer,
     PasswordResetConfirmSerializer,
     PasswordResetRequestSerializer,
     PasswordResetTokenValidationSerializer,
@@ -24,6 +25,10 @@ class RegisterView(generics.CreateAPIView):
 
 class EmailTokenObtainPairView(TokenObtainPairView):
     serializer_class = EmailTokenObtainPairSerializer
+
+
+class ActiveUserTokenRefreshView(TokenRefreshView):
+    serializer_class = ActiveUserTokenRefreshSerializer
 
 
 class CurrentUserView(OrganizationContextMixin, generics.RetrieveAPIView):
@@ -82,6 +87,7 @@ __all__ = [
     "RegisterView",
     "EmailTokenObtainPairView",
     "TokenRefreshView",
+    "ActiveUserTokenRefreshView",
     "CurrentUserView",
     "PasswordResetRequestView",
     "PasswordResetValidationView",

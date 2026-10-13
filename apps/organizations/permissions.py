@@ -31,7 +31,11 @@ class IsOrganizationMember(BasePermission):
         if not request.user or not request.user.is_authenticated:
             return False
         membership = getattr(request, "membership", None)
-        return bool(membership and membership.is_active)
+        organization_available = bool(
+            getattr(request, "organization", None)
+            and request.organization.is_active
+        ) or bool(getattr(view, "allow_suspended_organization", False))
+        return bool(membership and membership.is_active and organization_available)
 
 
 class IsOwner(BasePermission):
@@ -41,10 +45,15 @@ class IsOwner(BasePermission):
         if not request.user or not request.user.is_authenticated:
             return False
         membership = getattr(request, "membership", None)
+        organization_available = bool(
+            getattr(request, "organization", None)
+            and request.organization.is_active
+        ) or bool(getattr(view, "allow_suspended_organization", False))
         return bool(
             membership
             and membership.is_active
-            and membership.role == Membership.Role.OWNER,
+            and membership.role == Membership.Role.OWNER
+            and organization_available
         )
 
 
@@ -55,10 +64,15 @@ class IsOwnerOrManager(BasePermission):
         if not request.user or not request.user.is_authenticated:
             return False
         membership = getattr(request, "membership", None)
+        organization_available = bool(
+            getattr(request, "organization", None)
+            and request.organization.is_active
+        ) or bool(getattr(view, "allow_suspended_organization", False))
         return bool(
             membership
             and membership.is_active
-            and membership.role in {Membership.Role.OWNER, Membership.Role.MANAGER},
+            and membership.role in {Membership.Role.OWNER, Membership.Role.MANAGER}
+            and organization_available
         )
 
 
@@ -69,7 +83,7 @@ class HasActiveSubscription(BasePermission):
         if not request.user or not request.user.is_authenticated:
             return False
         organization = getattr(request, "organization", None)
-        if not organization:
+        if not organization or not organization.is_active:
             return False
 
         latest = organization.subscriptions.order_by("-start_date", "-created_at").first()

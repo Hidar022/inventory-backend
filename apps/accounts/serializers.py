@@ -8,7 +8,10 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
-from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenRefreshSerializer
+from rest_framework_simplejwt.tokens import RefreshToken
+from drf_spectacular.utils import extend_schema_field
 
 from apps.accounts.models import PasswordResetToken
 from apps.dashboard.services import log_activity_event
@@ -75,10 +78,21 @@ class RegisterSerializer(serializers.ModelSerializer):
 class UserSerializer(serializers.ModelSerializer):
     organization = serializers.SerializerMethodField()
     role = serializers.SerializerMethodField()
+    is_platform_admin = serializers.SerializerMethodField()
+    platform_role = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ["id", "email", "first_name", "last_name", "organization", "role"]
+        fields = [
+            "id",
+            "email",
+            "first_name",
+            "last_name",
+            "organization",
+            "role",
+            "is_platform_admin",
+            "platform_role",
+        ]
 
     def get_membership(self, obj):
         request = self.context.get("request")
@@ -104,6 +118,32 @@ class UserSerializer(serializers.ModelSerializer):
         if not membership:
             return None
         return membership.role.lower()
+
+    @extend_schema_field(serializers.BooleanField())
+    def get_is_platform_admin(self, obj):
+        from apps.platform_admin.permissions import user_has_platform_access
+
+        return user_has_platform_access(obj)
+
+    def get_platform_role(self, obj):
+        from apps.platform_admin.permissions import user_platform_role
+
+        return user_platform_role(obj)
+
+
+class ActiveUserTokenRefreshSerializer(TokenRefreshSerializer):
+    def validate(self, attrs):
+        if not attrs.get("refresh"):
+            return super().validate(attrs)
+        try:
+            refresh = RefreshToken(attrs["refresh"])
+        except TokenError:
+            return super().validate(attrs)
+
+        user_id = refresh.get("user_id")
+        if not User.objects.filter(pk=user_id, is_active=True).exists():
+            raise InvalidToken("No active account found for the given token.")
+        return super().validate(attrs)
 
 
 class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):

@@ -79,7 +79,7 @@ DEFAULT_PLANS = [
 
 def ensure_default_plans():
     for plan_data in DEFAULT_PLANS:
-        SubscriptionPlan.objects.update_or_create(
+        SubscriptionPlan.objects.get_or_create(
             code=plan_data["code"],
             defaults={
                 "name": plan_data["name"],

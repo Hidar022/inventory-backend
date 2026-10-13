@@ -32,6 +32,7 @@ from apps.organizations.permissions import IsOrganizationMember, IsOwner, Organi
 
 
 class SubscriptionPlanListView(OrganizationContextMixin, generics.ListAPIView):
+    allow_suspended_organization = True
     permission_classes = [permissions.IsAuthenticated, IsOrganizationMember]
     serializer_class = SubscriptionPlanSerializer
 
@@ -41,6 +42,7 @@ class SubscriptionPlanListView(OrganizationContextMixin, generics.ListAPIView):
 
 
 class BillingSummaryView(OrganizationContextMixin, generics.GenericAPIView):
+    allow_suspended_organization = True
     permission_classes = [permissions.IsAuthenticated, IsOrganizationMember]
 
     def get(self, request, *args, **kwargs):
@@ -54,6 +56,7 @@ class BillingSummaryView(OrganizationContextMixin, generics.GenericAPIView):
 
 
 class BillingInitializeView(OrganizationContextMixin, generics.GenericAPIView):
+    allow_suspended_organization = True
     permission_classes = [permissions.IsAuthenticated, IsOrganizationMember, IsOwner]
     serializer_class = PaymentInitializationSerializer
 
@@ -122,6 +125,7 @@ class BillingInitializeView(OrganizationContextMixin, generics.GenericAPIView):
 
 
 class BillingVerifyView(OrganizationContextMixin, generics.GenericAPIView):
+    allow_suspended_organization = True
     permission_classes = [permissions.IsAuthenticated, IsOrganizationMember, IsOwner]
 
     def post(self, request, *args, **kwargs):
